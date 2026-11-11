@@ -13,6 +13,7 @@ export default function RangeStatus({state}){
       <div className="range-observations"><span>当前价格 <b>{number(state?.spot?.price)}</b></span><span>近 {config?.lookbackHours??2} 小时 <b className="green">UP {vote?.up??0}</b> · <b className="red">DOWN {vote?.down??0}</b></span><span>方向数据 {vote?.covered??0}/{vote?.expected??'—'} 场</span></div>
       <p className="range-data-note">当前价格在历史上下界内即为区间内；不要求往返次数、触及次数或宽度限制。</p>
       <p className="range-data-note">上下界来源：近 {config?.levelLookbackHours??4} 小时官方报价，{(config?.levelLookbackHours??4)*12} 根 5 分钟实体 K 线的最高/最低价 · 每场结束重算</p>
+      <p className="range-data-note">实体峰值 / 次峰值：{number(levels?.peak)} / {number(levels?.secondaryPeak)} · 实体谷值 / 次谷值：{number(levels?.valley)} / {number(levels?.secondaryValley)}</p>
       <p className="range-data-note">本场使用窗口：{stamp(levels?.start)} – {stamp(levels?.end)} · 下次更新：{stamp(levels?.end?levels.end+300000:null)}</p>
       <p className="range-data-note">有效 K 线 {levels?.validCandles??0}/{levels?.expected??((config?.levelLookbackHours??4)*12)} 根 · 最长断档 {number(Number.isFinite(levels?.maxGapMs)?levels.maxGapMs/1000:null)} 秒 / 允许 600 秒</p>
       <p className="range-data-note">入场检测：开盘立即开始，截止开盘后 {Number(minutes.toFixed(4))} 分钟；每场最多买入一次</p>
