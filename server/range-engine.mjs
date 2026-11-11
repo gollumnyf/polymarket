@@ -12,7 +12,7 @@ export class RangeEngine extends MomentumEngine {
   backfillMarketHistory(){
     if(this.backfillTask||!this.venue.fetch||!this.spot?.windowSeconds||this.now()-this.lastBackfill<30000)return;
     this.lastBackfill=this.now();
-    const window=this.spot.windowSeconds, end=Math.floor(this.now()/300000)*300, start=end-4*3600;
+    const config=this.store.rangeConfig(),window=this.spot.windowSeconds, end=Math.floor(this.now()/300000)*300, start=end-config.levelLookbackHours*3600;
     this.backfillTask=(async()=>{
       const rounds=[];for(let round=start;round<end;round+=300)rounds.push(round);
       for(let i=0;i<rounds.length;i+=8){
@@ -57,7 +57,7 @@ export class RangeEngine extends MomentumEngine {
     // forecast or official correction is used even within the same five seconds.
     if(this.analysisCache?.key===key)return {...this.analysisCache,candidate:classifyRange(this.analysisCache.candidate,this.spot?.price),vote:this.voteSummary(config,window)};
     const start=end-config.lookbackHours*3600000;
-    const levelStart=levelWindow(this.now()).start;
+    const levelStart=levelWindow(this.now(),config.levelLookbackHours).start;
     const history=Number.isFinite(window)?this.store.rangeBars(window,Math.min(start,levelStart),end):[];
     const bars=history.filter(bar=>bar.bucket>=start);
     const candidate=stableRange(bars,config,this.now(),history,this.spot?.price),vote=this.voteSummary(config,window);
