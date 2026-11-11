@@ -127,23 +127,14 @@ test('typed evidence and account state persist across restart, and clearing term
   assert.equal(restored.db.prepare('SELECT count(*) AS n FROM momentum_order_signals').get().n,0);assert.equal(restored.hasRound('paper',start),true);
 });
 
-test('new page APIs isolate tokens, configurations, funds and live permissions from the original app',async t=>{
+test('the removed momentum page is no longer mounted while its engine remains reusable',async t=>{
   const {engine:momentum,store:newStore,venue}=setup(t);
   const oldStore=new Store(':memory:');t.after(()=>oldStore.close());const old=new Engine(oldStore,venue);
-  const server=createApp(old,{momentumEngine:momentum}).listen(0,'127.0.0.1');
+  const server=createApp(old).listen(0,'127.0.0.1');
   await new Promise(resolve=>server.once('listening',resolve));t.after(()=>{server.close();server.closeAllConnections();});
   const base=`http://127.0.0.1:${server.address().port}`;
-  const original=await(await fetch(base+'/api/state')).json(),fresh=await(await fetch(base+'/momentum/api/state')).json();
-  assert.notEqual(original.controlToken,fresh.controlToken);assert.equal(fresh.strategy,'official_momentum');
-  const post=(path,token,body={})=>fetch(base+path,{method:'POST',headers:{Origin:base,'Content-Type':'application/json','X-Control-Token':token},body:JSON.stringify(body)});
-  assert.equal((await post('/momentum/api/paper/start',original.controlToken)).status,403);
-  assert.equal((await post('/momentum/api/live/start',fresh.controlToken)).status,400);
-  const config={...newStore.account('paper').config,baseAmount:7};
-  assert.equal((await post('/momentum/api/paper/config',fresh.controlToken,config)).status,200);
-  assert.equal(newStore.account('paper').config.baseAmount,7);assert.equal(oldStore.account('paper').config.baseAmount,10);
-  assert.equal((await post('/momentum/api/paper/config',fresh.controlToken,{...config,maxPrice:0.51})).status,400);
-  assert.equal((await post('/momentum/api/paper/start',fresh.controlToken)).status,200);
-  await momentum.attempt('paper');assert.equal(newStore.orderCount('paper'),1);assert.equal(oldStore.orderCount('paper'),0);
-  const page=await(await fetch(base+'/momentum/api/paper/orders?pageSize=1')).json();assert.equal(page.items.length,1);assert.ok(page.items[0].momentumSignal);
-  assert.equal(apiPath('paper/orders','/momentum'),'/momentum/api/paper/orders');assert.equal(apiPath('state','/paper'),'/api/state');
+  const original=await(await fetch(base+'/api/state')).json();
+  assert.ok(original.controlToken);
+  assert.equal((await fetch(base+'/momentum/api/state')).status,404);
+  assert.equal(apiPath('state','/paper'),'/api/state');
 });

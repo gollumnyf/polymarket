@@ -47,7 +47,7 @@ test('empty days are included and forecasts never become realized income',t=>{
 test('report endpoint isolates all three simulators and rejects malformed ranges',async t=>{
   const stores=Array.from({length:3},()=>new Store(':memory:'));const engines=stores.map(store=>Object.assign(new EventEmitter(),{store,venue:{}}));
   stores.forEach((store,i)=>store.reserveOrder({id:'r'+i,mode:'paper',session:store.account('paper').session,round:1800000000,status:'won',createdAt:dateStart('2026-11-01'),settledAt:dateStart('2026-11-01')+1000,cost:10,fee:i,payout:20+i,pnl:10+i}));
-  const app=createApp(engines[0],{momentumEngine:engines[1],rangeEngine:engines[2]});const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+  const app=createApp(engines[0],{momentumReportStore:stores[1],rangeEngine:engines[2]});const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));stores.forEach(store=>store.close());});
   const base='http://127.0.0.1:'+server.address().port;
   for(const [i,prefix]of ['','/momentum','/range'].entries()){
@@ -56,4 +56,11 @@ test('report endpoint isolates all three simulators and rejects malformed ranges
   }
   for(const query of ['startDate=invalid','startDate=2026-11-02&endDate=2026-11-01','startDate=2026-11-01&startDate=2026-11-02'])assert.equal((await fetch(base+'/api/paper/report?'+query)).status,400);
   assert.equal((await fetch(base+'/api/live/report')).status,404);
+  assert.equal((await fetch(base+'/momentum/api/state')).status,404);
+  assert.equal((await fetch(base+'/momentum/api/paper/orders')).status,404);
+});
+
+test('a missing archived simulator database returns an empty report',()=>{
+  const result=paperReport(null,{startDate:'2026-11-01',endDate:'2026-11-02'});
+  assert.equal(result.days.length,2);assert.equal(result.summary.orderCount,0);assert.equal(result.summary.netPnl,0);
 });

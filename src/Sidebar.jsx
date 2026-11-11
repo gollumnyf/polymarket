@@ -1,11 +1,11 @@
 import React from 'react';
-import {Activity,Layers3,ShieldCheck,FlaskConical,Zap,BarChart3,SlidersHorizontal,BookOpen,ExternalLink,ArrowUpRight,Settings2} from 'lucide-react';
+import {Activity,Layers3,ShieldCheck,Zap,BarChart3,SlidersHorizontal,BookOpen,ExternalLink,ArrowUpRight,Settings2} from 'lucide-react';
 
 export default function Sidebar({active,onNavigate,onSettings,onGuide,onConnection}){
   const navigate=onNavigate||(page=>location.assign('/'+page));
-  const pages=[['paper','模拟交易',FlaskConical,'PAPER'],['momentum','官方同向模拟',Activity,'≤ 0.50'],['range','区间突破模拟',Layers3,'< 0.50'],['live','实盘交易',Zap,'LIVE'],['reports','模拟盘报表',BarChart3,null]];
+  const pages=[['range','区间突破模拟',Layers3,'< 0.50'],['live','实盘交易',Zap,'LIVE'],['reports','模拟盘报表',BarChart3,null]];
   return <aside className="sidebar">
-    <a href="/paper" className="brand" onClick={event=>{event.preventDefault();navigate('paper');}}><span className="brand-icon"><Activity size={24}/></span>pulse<span className="brand-dot">.</span><span className="beta">TERMINAL</span></a>
+    <a href="/live" className="brand" onClick={event=>{event.preventDefault();navigate('live');}}><span className="brand-icon"><Activity size={24}/></span>pulse<span className="brand-dot">.</span><span className="beta">TERMINAL</span></a>
     <div className="workspace"><span className="workspace-icon"><Layers3 size={18}/></span><div>我的交易空间<small>Personal workspace</small></div><span className="workspace-check"><ShieldCheck size={15}/></span></div>
     <div className="nav-label">交易工作台</div>
     <nav>{pages.map(([page,label,Icon,tag])=><button key={page} className={'nav-item'+(active===page?' selected':'')} onClick={()=>navigate(page)} aria-current={active===page?'page':undefined}><Icon size={18}/><span>{label}</span>{tag&&<span className="nav-tag">{tag}</span>}</button>)}</nav>

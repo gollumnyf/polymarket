@@ -3,7 +3,7 @@ import {BarChart3,CalendarDays,ChevronLeft,ChevronRight,RefreshCw,LoaderCircle,I
 import Sidebar from './Sidebar.jsx';
 import {DAY_MS,dateKey,dateStart,recentDates,reportDates} from './report-dates.mjs';
 
-const portfolios=[{id:'paper',label:'模拟交易',prefix:''},{id:'momentum',label:'官方同向模拟',prefix:'/momentum'},{id:'range',label:'区间突破模拟',prefix:'/range'}];
+const portfolios=[{id:'range',label:'区间突破模拟',prefix:'/range'},{id:'paper',label:'模拟交易（历史）',prefix:''},{id:'momentum',label:'官方同向模拟（历史）',prefix:'/momentum'}];
 const money=value=>Number(value??0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const signed=value=>`${value<0?'−':'+'}${money(Math.abs(value??0))}`;
 const color=value=>value>0?'green':value<0?'red':'';
@@ -27,7 +27,7 @@ export function ReportCalendar({data,month,selected,onSelect}){
 function Metric({title,value,note,tone}){return <div className="report-metric"><span>{title}</span><strong className={tone||''}>{value}</strong><small>{note}</small></div>;}
 
 export default function ReportsPage(){
-  const [portfolio,setPortfolio]=useState('paper'),[dates,setDates]=useState(()=>recentDates()),[draft,setDraft]=useState(()=>recentDates());
+  const [portfolio,setPortfolio]=useState('range'),[dates,setDates]=useState(()=>recentDates()),[draft,setDraft]=useState(()=>recentDates());
   const [month,setMonth]=useState(()=>recentDates().endDate.slice(0,7)),[selected,setSelected]=useState(()=>recentDates().endDate);
   const [result,setResult]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState(''),[refresh,setRefresh]=useState(0),[validation,setValidation]=useState('');
   const tab=portfolios.find(item=>item.id===portfolio),key=periodKey(portfolio,dates),data=result?.key===key?result.data:null;

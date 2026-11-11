@@ -18,11 +18,11 @@ const time = (seconds, includeSeconds = false) => new Date(seconds * 1000).toLoc
 const roundName = seconds => `${time(seconds)} – ${time(seconds + 300)}`;
 
 function App() {
-  const momentum=location.pathname.startsWith('/momentum');
   const rangeMode=location.pathname.startsWith('/range');
-  const automaticMode=momentum||rangeMode;
-  const pageTitle=rangeMode?'区间突破模拟':momentum?'官方同向模拟':null;
-  const [mode, setMode] = useState(location.pathname.startsWith('/live') ? 'live' : 'paper');
+  const momentum=false;
+  const automaticMode=rangeMode;
+  const pageTitle=rangeMode?'区间突破模拟':null;
+  const [mode, setMode] = useState(rangeMode ? 'paper' : 'live');
   const [state, setState] = useState(null);
   const [token, setToken] = useState('');
   const [connected, setConnected] = useState(false);
@@ -31,11 +31,12 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [historyClearKey,setHistoryClearKey] = useState(0);
   const [toast, setToast] = useState(null);
-  const [modal, setModal] = useState(null);
+  const [modal, setModal] = useState(new URLSearchParams(location.search).get('settings') === '1' ? 'settings' : null);
   const [tab, setTab] = useState('orders');
   const [range, setRange] = useState('round');
   const [base, setBase] = useState('10');
   const [editingBase, setEditingBase] = useState(false);
+  useEffect(() => { if (location.pathname.startsWith('/momentum') || location.pathname === '/' || location.pathname === '/paper') location.replace('/live'); }, []);
   useEffect(() => {
     let stopped = false;
     let retry;
@@ -57,7 +58,7 @@ function App() {
     const timer = setInterval(() => setClock(Date.now()), 250);
     return () => { stopped = true; clearTimeout(retry); events.close(); clearInterval(timer); };
   }, []);
-  useEffect(() => { const pop = () => setMode(location.pathname.startsWith('/live') ? 'live' : 'paper'); addEventListener('popstate', pop); return () => removeEventListener('popstate', pop); }, []);
+  useEffect(() => { const pop = () => setMode(location.pathname.startsWith('/range') ? 'paper' : 'live'); addEventListener('popstate', pop); return () => removeEventListener('popstate', pop); }, []);
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 5500); return () => clearTimeout(id); }, [toast]);
 
   const account = state?.accounts[mode];
@@ -88,7 +89,7 @@ function App() {
     if (baseLocked) setEditingBase(false);
   }, [mode, account?.config.baseAmount, editingBase, baseLocked]);
 
-  function switchMode(next) { if(automaticMode||['momentum','range','reports'].includes(next)){location.assign(`/${next}`);return;} history.pushState(null, '', `/${next}`); setMode(next); setEditingBase(false); }
+  function switchMode(next) { location.assign(['range','reports'].includes(next)?`/${next}`:'/live'); }
   async function action(path, body = {}) {
     if (busy) return false;
     setBusy(true);
@@ -116,7 +117,7 @@ function App() {
   }
 
   return <div className={`app ${live ? 'live-mode' : ''}`}>
-    <Sidebar active={rangeMode?'range':momentum?'momentum':mode} onNavigate={switchMode} onSettings={()=>setModal('settings')} onGuide={()=>setModal('guide')} onConnection={()=>setModal('connection')}/>
+    <Sidebar active={rangeMode?'range':momentum?'momentum':mode} onNavigate={switchMode} onSettings={()=>location.assign('/range?settings=1')} onGuide={()=>setModal('guide')} onConnection={()=>setModal('connection')}/>
     <div className="main-shell">
       <header className="topbar"><div className="breadcrumb">交易工作台 <ChevronRight size={13}/><strong>{pageTitle || (live ? '实盘交易' : '模拟交易')}</strong></div><div className="top-actions"><span className={`connection ${freshSpot && freshMarket ? 'healthy' : ''}`}><i/>{freshSpot && freshMarket ? '市场数据已连接' : !connected ? '正在连接本地服务' : '等待市场数据'}</span><span className="top-divider"/><button className="icon-button" aria-label="使用帮助" onClick={() => setModal('guide')}><CircleHelp size={18}/></button><button className="icon-button notification" aria-label="查看运行日志" onClick={() => { setTab('logs'); document.querySelector('#history')?.scrollIntoView({ behavior: 'smooth' }); }}><Bell size={18}/>{Object.keys(state?.errors || {}).length > 0 && <i/>}</button></div></header>
       <main>
