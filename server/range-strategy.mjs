@@ -1,6 +1,9 @@
 export const RANGE_DEFAULTS=Object.freeze({lookbackHours:2});
 export const RANGE_BUCKET_MS=5000;
-export const RANGE_MAX_GAP_MS=60000;
+// Polymarket market history can leave a whole five-minute round without
+// granular RTDS samples. Keep the range usable across that bounded gap, while
+// still rejecting longer outages.
+export const RANGE_MAX_GAP_MS=300000;
 export const LEVEL_CANDLE_MS=15*60000;
 export const LEVEL_LOOKBACK_HOURS=4;
 // The outer fifth of a confirmed range is treated as the boundary zone.  In
@@ -49,7 +52,7 @@ export function analyzeLevels(bars,config,now){
     maxGapMs:history.maxGapMs,gapLimitMs:RANGE_MAX_GAP_MS,candles,lower,upper,actualLower:lower,actualUpper:upper,
     widthPercent:lower>0?(upper-lower)/((upper+lower)/2)*100:null,supportSource:'rolling_extremes',resistanceSource:'rolling_extremes',ready:false};
   if(history.invalid)return {...result,code:'RANGE_LEVEL_HISTORY_INVALID',message:`历史报价无效：${String(history.invalid.bucket)}`};
-  if(history.maxGapMs>RANGE_MAX_GAP_MS||result.validCandles!==16)return {...result,code:'RANGE_LEVEL_HISTORY_INCOMPLETE',message:`近 4 小时有效 15 分钟 K 线 ${result.validCandles}/16 根，最长报价缺失 ${history.maxGapMs/1000} 秒，允许最多 60 秒；继续获取历史数据`};
+  if(history.maxGapMs>RANGE_MAX_GAP_MS||result.validCandles!==16)return {...result,code:'RANGE_LEVEL_HISTORY_INCOMPLETE',message:`近 4 小时有效 15 分钟 K 线 ${result.validCandles}/16 根，最长报价缺失 ${history.maxGapMs/1000} 秒，允许最多 300 秒；继续获取 Polymarket 历史数据`};
   return {...result,ready:true,code:null,message:'历史上下界已就绪，每场结束重算；仅按当前价格是否越界判断区间状态'};
 }
 

@@ -45,7 +45,7 @@ test('a single extreme defines each boundary without touches, oscillation or wid
 });
 
 test('incomplete history remains unavailable and does not invent historical bounds',()=>{
-  const bars=levelBars();bars.splice(100,20);
+  const bars=levelBars();bars.splice(100,70);
   const candidate=evaluateRange([],config,end,bars,100);
   assert.equal(candidate.stable,false);assert.equal(candidate.code,'RANGE_LEVEL_HISTORY_INCOMPLETE');
   assert.equal(rangeRegime(null,candidate,{complete:true,direction:'UP'},{price:200,windowSeconds:60},1,end),null);
