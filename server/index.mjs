@@ -6,14 +6,13 @@ import { Store } from './store.mjs';
 import { Polymarket, safeError } from './polymarket.mjs';
 import { Engine } from './engine.mjs';
 import { RoundHistory } from './history.mjs';
-import {MomentumEngine,MomentumStore} from './momentum.mjs';
+import {MomentumEngine} from './momentum.mjs';
 import {RangeEngine} from './range-engine.mjs';
 import {RangeStore} from './range-store.mjs';
 
 export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,momentumEngine=null,rangeEngine=null,allowedModes=['paper','live'] } = {}) {
   const app = express();
   app.disable('x-powered-by');
-  if(momentumEngine)app.use('/momentum',createApp(momentumEngine,{onShutdown,allowedModes:['paper']}));
   if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,allowedModes:['paper']}));
   const token = randomBytes(32).toString('hex');
   const service={name:'polymarket-btc-console',root:resolve(fileURLToPath(new URL('../',import.meta.url))),pid:process.pid,instanceId:randomBytes(12).toString('hex'),shutdownEnabled:typeof onShutdown==='function'};
@@ -162,15 +161,12 @@ async function main() {
   const store = new Store(resolve(root, 'data/trading.sqlite'));
   const venue = new Polymarket();
   const engine = new Engine(store, venue);
-  const momentumStore=new MomentumStore(resolve(root,'data/momentum.sqlite'));
-  const momentumVenue=new Polymarket({officialOpeningOnly:true});
-  const momentumEngine=new MomentumEngine(momentumStore,momentumVenue);
   const rangeStore=new RangeStore(resolve(root,'data/range.sqlite'));
-  rangeStore.seedFrom([store,momentumStore]);
+  rangeStore.seedFrom([store]);
   const rangeVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const rangeEngine=new RangeEngine(rangeStore,rangeVenue);
-  const engines=[engine,momentumEngine,rangeEngine];
-  const app = createApp(engine,{onShutdown:close,momentumEngine,rangeEngine});
+  const engines=[engine,rangeEngine];
+  const app = createApp(engine,{onShutdown:close,rangeEngine});
   const production = process.argv.includes('--production');
   let vite;
   if (production) {
@@ -184,8 +180,7 @@ async function main() {
   const port = Number(process.env.PORT || 3100);
   const server = app.listen(port, '127.0.0.1', () => {
     console.log(`Pulse BTC 5M · http://127.0.0.1:${port}`);
-    console.log('模拟盘 /paper · 实盘 /live · 策略默认暂停');
-    console.log('官方同向模拟盘 /momentum · 独立账户与记录 · 策略默认暂停');
+    console.log('实盘 /live · 策略默认暂停');
     console.log('区间突破模拟盘 /range · 买价严格低于 0.50 · 策略默认暂停');
   });
   server.on('error', error => { console.error(safeError(error)); process.exitCode = 1; });
@@ -196,7 +191,7 @@ async function main() {
   async function close() {
     if (closing) return; closing = true;for(const current of engines)current.closing=true;
     clearInterval(timer);
-    venue.close();momentumVenue.close();rangeVenue.close();
+    venue.close();rangeVenue.close();
     for(const current of engines)for(const mode of current.modes)current.stop(mode);
     server.close(); server.closeAllConnections();
     if (vite) await vite.close();
@@ -204,7 +199,7 @@ async function main() {
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
     while (engines.some(current=>current.busy||current.entryBusy||current.spotTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
-    store.close();momentumStore.close();rangeStore.close();process.exit(0);
+    store.close();rangeStore.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);
 }

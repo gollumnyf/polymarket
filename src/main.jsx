@@ -16,11 +16,11 @@ const time = (seconds, includeSeconds = false) => new Date(seconds * 1000).toLoc
 const roundName = seconds => `${time(seconds)} – ${time(seconds + 300)}`;
 
 function App() {
-  const momentum=location.pathname.startsWith('/momentum');
   const rangeMode=location.pathname.startsWith('/range');
-  const automaticMode=momentum||rangeMode;
-  const pageTitle=rangeMode?'区间突破模拟':momentum?'官方同向模拟':null;
-  const [mode, setMode] = useState(location.pathname.startsWith('/live') ? 'live' : 'paper');
+  const momentum=false;
+  const automaticMode=rangeMode;
+  const pageTitle=rangeMode?'区间突破模拟':null;
+  const [mode, setMode] = useState(rangeMode ? 'paper' : 'live');
   const [state, setState] = useState(null);
   const [token, setToken] = useState('');
   const [connected, setConnected] = useState(false);
@@ -34,6 +34,7 @@ function App() {
   const [range, setRange] = useState('round');
   const [base, setBase] = useState('10');
   const [editingBase, setEditingBase] = useState(false);
+  useEffect(() => { if (location.pathname.startsWith('/momentum') || location.pathname === '/' || location.pathname === '/paper') location.replace('/live'); }, []);
   useEffect(() => {
     let stopped = false;
     let retry;
@@ -55,7 +56,7 @@ function App() {
     const timer = setInterval(() => setClock(Date.now()), 250);
     return () => { stopped = true; clearTimeout(retry); events.close(); clearInterval(timer); };
   }, []);
-  useEffect(() => { const pop = () => setMode(location.pathname.startsWith('/live') ? 'live' : 'paper'); addEventListener('popstate', pop); return () => removeEventListener('popstate', pop); }, []);
+  useEffect(() => { const pop = () => setMode(location.pathname.startsWith('/range') ? 'paper' : 'live'); addEventListener('popstate', pop); return () => removeEventListener('popstate', pop); }, []);
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 5500); return () => clearTimeout(id); }, [toast]);
 
   const account = state?.accounts[mode];
@@ -86,7 +87,7 @@ function App() {
     if (baseLocked) setEditingBase(false);
   }, [mode, account?.config.baseAmount, editingBase, baseLocked]);
 
-  function switchMode(next) { if(automaticMode||['momentum','range'].includes(next)){location.assign(`/${next}`);return;} history.pushState(null, '', `/${next}`); setMode(next); setEditingBase(false); }
+  function switchMode(next) { if(next==='range'){location.assign('/range');return;} location.assign('/live'); }
   async function action(path, body = {}) {
     if (busy) return false;
     setBusy(true);
@@ -115,12 +116,10 @@ function App() {
 
   return <div className={`app ${live ? 'live-mode' : ''}`}>
     <aside className="sidebar">
-      <a href="/paper" className="brand" onClick={e => { e.preventDefault(); switchMode('paper'); }}><span className="brand-icon"><Activity size={24}/></span>pulse<span className="brand-dot">.</span><span className="beta">TERMINAL</span></a>
+      <a href="/live" className="brand" onClick={e => { e.preventDefault(); switchMode('live'); }}><span className="brand-icon"><Activity size={24}/></span>pulse<span className="brand-dot">.</span><span className="beta">TERMINAL</span></a>
       <div className="workspace"><span className="workspace-icon"><Layers3 size={18}/></span><div>我的交易空间<small>Personal workspace</small></div><span className="workspace-check"><ShieldCheck size={15}/></span></div>
       <div className="nav-label">交易工作台</div>
       <nav>
-        <button className={mode === 'paper' && !automaticMode ? 'nav-item selected' : 'nav-item'} onClick={() => switchMode('paper')}><FlaskConical size={18}/><span>模拟交易</span><span className="nav-tag">PAPER</span></button>
-        <button className={momentum?'nav-item selected':'nav-item'} onClick={()=>switchMode('momentum')}><Activity size={18}/><span>官方同向模拟</span><span className="nav-tag">≤ 0.50</span></button>
         <button className={rangeMode?'nav-item selected':'nav-item'} onClick={()=>switchMode('range')}><Layers3 size={18}/><span>区间突破模拟</span><span className="nav-tag">&lt; 0.50</span></button>
         <button className={mode === 'live' ? 'nav-item selected' : 'nav-item'} onClick={() => switchMode('live')}><Zap size={18}/><span>实盘交易</span>{live ? <span className="nav-tag">LIVE</span> : <span className="nav-status"/>}</button>
       </nav>
