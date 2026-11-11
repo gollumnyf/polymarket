@@ -1,0 +1,28 @@
+{
+  "name": "polymarket-btc-console",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.5.0"
+  },
+  "scripts": {
+    "dev": "node --use-env-proxy --env-file-if-exists=.env server/index.mjs",
+    "build": "vite build",
+    "start": "node --use-env-proxy --env-file-if-exists=.env server/index.mjs --production",
+    "test": "node --test tests/*.test.mjs",
+    "doctor": "node --use-env-proxy --env-file-if-exists=.env scripts/doctor.mjs",
+    "check": "node --check server/index.mjs && node --check server/engine.mjs && node --check server/polymarket.mjs && node --check server/store.mjs"
+  },
+  "dependencies": {
+    "@polymarket/client": "0.17.0",
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "viem": "^2.57.17"
+  },
+  "devDependencies": {
+    "vite": "^6.4.1"
+  }
+}

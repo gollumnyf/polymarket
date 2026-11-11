@@ -1,0 +1,151 @@
+import { roundStart, money, DEFAULT_CONFIG } from './strategy.mjs';
+import { safeError } from './polymarket.mjs';
+import { recordRoundSignals, SIGNAL_SAMPLE_SECONDS, withReversal } from './round-signals.mjs';
+import {oppositeDirection} from '../src/entry-mode.mjs';
+
+export const HISTORY_COUNT = 20;
+const positivePrice = value => {
+  if (value == null || value === '') return null;
+  const price = Number(value);
+  return Number.isFinite(price) && price > 0 ? price : null;
+};
+
+export function normalizeHistoricalRound(round, event, resolution) {
+  const slug = `btc-updown-5m-${round}`;
+  const market = event?.markets?.find(m => m.slug === slug);
+  const base = { round, end: round + 300, slug, result: null, status: 'pending',
+    open: null, close: null, change: null, changePercent: null };
+  if (event?.slug !== slug || !market) return { ...base, status: 'unavailable' };
+  base.open = positivePrice(event.eventMetadata?.priceToBeat);
+  base.close = positivePrice(event.eventMetadata?.finalPrice);
+  if (base.open != null && base.close != null) {
+    base.change = money(base.close - base.open);
+    base.changePercent = (base.close - base.open) / base.open * 100;
+  }
+  const final = resolution?.status === 'resolved' && resolution.conditionId === market.conditionId;
+  if (!final) return base;
+  const payouts = resolution.payouts?.map(Number);
+  if (!payouts || payouts.length !== 2 || payouts.some(p => !Number.isFinite(p) || p < 0 || p > 1) ||
+      Math.abs(payouts[0] + payouts[1] - 1) > 1e-6) return base;
+  let labels;
+  try { labels = Array.isArray(market.outcomes) ? market.outcomes : JSON.parse(market.outcomes); }
+  catch { return { ...base, status: 'unavailable' }; }
+  if (!Array.isArray(labels) || labels.length !== 2) return { ...base, status: 'unavailable' };
+  labels = labels.map(label => String(label).toUpperCase());
+  if (!labels.includes('UP') || !labels.includes('DOWN')) return { ...base, status: 'unavailable' };
+  const winner = payouts.findIndex(p => p === 1);
+  base.result = winner >= 0 && payouts[1 - winner] === 0 ? labels[winner] : null;
+  base.status = base.result ? 'resolved' : 'void';
+  return base;
+}
+
+// Presentation-only estimates never overwrite official history or trading predictions.
+export function withHistoricalForecast(item,forecast) {
+  const officialClose=positivePrice(item.close),open=positivePrice(item.open)??forecast?.open??null;
+  const close=officialClose??forecast?.close??null;
+  const change=open!=null&&close!=null?money(close-open):null;
+  const comparison=item.status==='resolved'?item.result:
+    officialClose!=null&&open!=null?(officialClose>=open?'UP':'DOWN'):null;
+  return {...item,open,close,change,changePercent:change!=null?change/open*100:null,
+    closeSource:officialClose!=null?'polymarket_event_metadata':forecast?'polymarket_last_second':null,
+    closeAt:officialClose!=null?null:forecast?.priceAt??null,forecast:forecast||null,
+    forecastComparison:comparison,
+    forecastComparisonSource:['resolved','void'].includes(item.status)?'official_result':'platform_prices',
+    forecastMatches:forecast?(item.status==='void'?false:comparison?forecast.outcome===comparison:null):null};
+}
+
+// History is read independently of trading ticks. Completed rounds are cached;
+// failures cannot delay execution, change positions, or invent a final result.
+export class RoundHistory {
+  constructor(venue, { now = () => Date.now(), store = null } = {}) {
+    this.venue = venue; this.now = now; this.cache = new Map();
+    this.store = store;
+    this.lastAttempt = 0; this.updatedAt = null; this.currentRound = null;
+    this.inflight = null; this.error = null;
+  }
+  starts() {
+    const current = roundStart(this.now());
+    return Array.from({ length: HISTORY_COUNT }, (_, i) => current - (HISTORY_COUNT - i) * 300);
+  }
+  lastSecondForecast(item) {
+    if(!this.store||this.now()<item.end*1000)return null;
+    const saved=this.store.roundPrediction(item.round);
+    if(saved?.source==='polymarket_last_second'&&Number.isFinite(saved.priceAt)&&
+      saved.priceAt>=(item.end-1)*1000&&saved.priceAt<item.end*1000)return saved;
+    const reference=this.store.roundOpening(item.round)||
+      (saved&&Number.isFinite(saved.oracleWindow)?saved:null)||this.store.roundSignalReference(item.round);
+    if(!reference||!Number.isFinite(reference.open)||reference.open<=0)return null;
+    const tick=this.store.lastSecondTick(item.round,reference.oracleWindow);
+    return tick?{round:item.round,open:reference.open,close:tick.price,outcome:tick.price>=reference.open?'UP':'DOWN',
+      oracleWindow:reference.oracleWindow,source:'polymarket_last_second',priceAt:tick.time}:null;
+  }
+  snapshot(entryDelay = DEFAULT_CONFIG.entryDelay,followPreviousAtOpen=false,reverseSignal=false) {
+    const items = this.starts().map(round => this.cache.get(round) || this.store?.historicalRound(round) || {
+      round, end: round + 300, slug: `btc-updown-5m-${round}`, result: null,
+      status: 'loading', open: null, close: null, change: null, changePercent: null,
+    });
+    return { items: items.map(item => {
+      if (this.store) recordRoundSignals(this.store,item.round,item.open,[...SIGNAL_SAMPLE_SECONDS,entryDelay]);
+      const saved = this.store?.initialSignal(item.round,entryDelay) || null;
+      let initial = saved?.rule === 'current_round_open' ? saved : null;
+      if(reverseSignal&&initial)initial={...initial,marketDirection:initial.direction,direction:oppositeDirection(initial.direction),rule:'current_round_reverse'};
+      else if(followPreviousAtOpen){
+        const previous=this.store?.roundPrediction(item.round-300);
+        initial=previous?{round:item.round,targetSeconds:entryDelay,observedAt:previous.priceAt??previous.observedAt,
+          direction:previous.outcome,price:previous.close,referencePrice:previous.open,source:previous.source,
+          rule:'previous_round_prediction'}:null;
+      }
+      return withReversal(withHistoricalForecast(item,this.lastSecondForecast(item)), initial);
+    }), entryDelay,followPreviousAtOpen,reverseSignal,updatedAt: this.updatedAt, error: this.error };
+  }
+  async read({entryDelay = DEFAULT_CONFIG.entryDelay,followPreviousAtOpen=false,reverseSignal=false} = {}) {
+    if (this.inflight) { await this.inflight; return this.snapshot(entryDelay,followPreviousAtOpen,reverseSignal); }
+    if (this.currentRound !== roundStart(this.now()) || this.now() - this.lastAttempt >= 15000) {
+      this.inflight = this.refresh().finally(() => { this.inflight = null; });
+      await this.inflight;
+    }
+    return this.snapshot(entryDelay,followPreviousAtOpen,reverseSignal);
+  }
+  async refresh() {
+    this.lastAttempt = this.now(); this.currentRound = roundStart(this.now());
+    const starts = this.starts();
+    for (const key of this.cache.keys()) if (!starts.includes(key)) this.cache.delete(key);
+    for (const round of starts) if (!this.cache.has(round)) {
+      const saved = this.store?.historicalRound(round);
+      if (saved) this.cache.set(round, saved);
+    }
+    this.updatedAt = Math.max(this.updatedAt || 0, ...[...this.cache.values()].map(item => item.updatedAt || 0)) || null;
+    const missing = starts.filter(round => {
+      const item = this.cache.get(round);
+      return !item || !['resolved', 'void'].includes(item.status) || item.open == null || item.close == null;
+    });
+    if (!missing.length) { this.error = null; return; }
+    try {
+      const query = new URLSearchParams({ limit: String(HISTORY_COUNT) });
+      for (const round of missing) query.append('slug', `btc-updown-5m-${round}`);
+      const response = await this.venue.fetch(`https://gamma-api.polymarket.com/events?${query}`);
+      if (!response.ok) throw new Error(`历史场次接口 HTTP ${response.status}`);
+      const events = await response.json();
+      if (!Array.isArray(events)) throw new Error('历史场次响应无效');
+      const wanted = new Set(missing.map(round => `btc-updown-5m-${round}`));
+      const selected = events.filter(event => wanted.has(event.slug));
+      const conditions = [...new Set(selected.flatMap(event => event.markets || [])
+        .filter(m => wanted.has(m.slug)).map(m => m.conditionId).filter(Boolean))];
+      if (conditions.length > HISTORY_COUNT) throw new Error('历史场次包含异常数量的市场');
+      const resolutions = conditions.length ? await this.venue.public.fetchResolutions({ conditionIds: conditions }) : [];
+      for (const round of missing) {
+        const slug = `btc-updown-5m-${round}`;
+        const event = selected.find(e => e.slug === slug);
+        const market = event?.markets?.find(m => m.slug === slug);
+        const resolution = resolutions.find(r => r.conditionId === market?.conditionId);
+        const next = normalizeHistoricalRound(round, event, resolution);
+        const previous = this.cache.get(round);
+        // Transient omissions must not erase a result that was already finalized.
+        if (!previous || !['resolved', 'void'].includes(previous.status) || ['resolved', 'void'].includes(next.status)) {
+          this.cache.set(round, this.store ? this.store.saveHistoricalRound(next, this.now()) : next);
+        }
+      }
+      this.updatedAt = this.now(); this.error = null;
+    } catch (error) { this.error = safeError(error); }
+  }
+}
