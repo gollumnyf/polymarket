@@ -24,7 +24,7 @@ export default function RangeStatus({state}){
 }
 export function RangeGuide({config,entryWindow=120}){return <div className="guide">
   <div className="guide-step"><b>01</b><div><h3>历史上下界每场重算</h3><p>使用近 4 小时官方报价，按每个五分钟场次的起始时刻向前合成 16 根滚动 15 分钟 K 线。最高价为上界，最低价为下界；当前场次的新价格不修改本场历史边界，每场结束后重新计算。数据允许最多 60 秒断档，不补造缺失报价。</p></div></div>
-  <div className="guide-step"><b>02</b><div><h3>价格在区间内直接选向</h3><p>当前价格位于上下界之间（包含边界）即属于区间内，无需观察往返、重复触及或限制宽度。首次按近 {config?.lookbackHours??2} 小时五分钟场次 UP/DOWN 多数选向；同票取上一场结果反方向，官方未结算用已有预测，缺少方向数据时等待。区间内锁定沿用。上穿上界选 UP，下穿下界选 DOWN；突破后下一场开盘执行。持续越界保持突破方向，回到更新后的历史区间内即重新按票数选向。</p></div></div>
+  <div className="guide-step"><b>02</b><div><h3>靠近边界反向，持续越界顺向</h3><p>当前价格位于上下界之间（包含边界）即属于区间内，无需观察往返、重复触及或限制宽度。首次按近 {config?.lookbackHours??2} 小时五分钟场次 UP/DOWN 多数选向；同票取上一场结果反方向，官方未结算用已有预测，缺少方向数据时等待。价格在中部时沿用已选方向；进入上侧 20% 边界带买 DOWN，进入下侧 20% 边界带买 UP，帮助价格回到区间中部。严格上穿上界买 UP、跌破下界买 DOWN，并持续保持该方向；回到区间内后恢复边界反向与原有区间逻辑。</p></div></div>
   <div className="guide-step"><b>03</b><div><h3>开盘检测与马丁资金</h3><p>从开盘立即检测，到开盘后 {Number((entryWindow/60).toFixed(4))} 分钟截止。买价严格低于 0.50，检查 tick、最小份额、深度和手续费。每场最多一次；失利翻倍，获胜复位，金额超限从首笔开始。错误记录后重试，配置、行情、每单方向依据和区间历史均保存在 SQLite。</p></div></div>
   <a className="text-button" href="https://polymarket.com/crypto" target="_blank" rel="noreferrer">查看 Polymarket 市场 <ArrowUpRight size={14}/></a>
 </div>;}

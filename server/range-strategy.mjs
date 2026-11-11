@@ -3,6 +3,9 @@ export const RANGE_BUCKET_MS=5000;
 export const RANGE_MAX_GAP_MS=60000;
 export const LEVEL_CANDLE_MS=15*60000;
 export const LEVEL_LOOKBACK_HOURS=4;
+// The outer fifth of a confirmed range is treated as the boundary zone.  In
+// that zone the mean-reversion signal is opposite to the price movement.
+export const RANGE_EDGE_FRACTION=0.2;
 
 export function levelWindow(now){
   const end=Math.floor(now/300000)*300000;
@@ -61,8 +64,13 @@ export function classifyRange(candidate,price){
   if(!candidate.levelAnalysis.ready)return candidate;
   const inside=Number.isFinite(price)&&price>=candidate.lower&&price<=candidate.upper;
   const direction=Number.isFinite(price)?price>candidate.upper?'UP':price<candidate.lower?'DOWN':null:null;
-  return {...candidate,stable:inside,breakoutDirection:direction,code:null,blockingReasons:[],message:inside?
-    `当前价格 ${price.toFixed(2)} 位于历史区间 ${candidate.lower.toFixed(2)}–${candidate.upper.toFixed(2)} 内`:
+  const width=candidate.upper-candidate.lower;
+  const edgeHint=inside&&width>0
+    ? price>=candidate.upper-width*RANGE_EDGE_FRACTION?'DOWN'
+      : price<=candidate.lower+width*RANGE_EDGE_FRACTION?'UP':null
+    : null;
+  return {...candidate,stable:inside,breakoutDirection:direction,edgeHint,code:null,blockingReasons:[],message:inside?
+    `当前价格 ${price.toFixed(2)} 位于历史区间 ${candidate.lower.toFixed(2)}–${candidate.upper.toFixed(2)} 内${edgeHint?`，靠近${edgeHint==='DOWN'?'上压力':'下支撑'}，倾向买${edgeHint}`:''}`:
     direction?`当前价格 ${price.toFixed(2)} ${direction==='UP'?'上穿历史最高价':'跌破历史最低价'} ${(direction==='UP'?candidate.upper:candidate.lower).toFixed(2)}，方向 ${direction}`:'等待当前有效官方报价'};
 }
 
@@ -87,16 +95,23 @@ export function rangeRegime(previous,candidate,vote,spot,configId,now){
     upCount:prior?.upCount??vote.up,downCount:prior?.downCount??vote.down,expectedCount:vote.expected};
   if(direction){
     if(prior?.phase===phase)return state;
-    return {...state,id:null,direction,lockedDirectionRule:'breakout',lockedPreviousRound:null,lockedPreviousDirection:null,lockedPreviousSource:null,
+    return {...state,id:null,direction,rangeBaseDirection:null,rangeBaseDirectionRule:null,lockedDirectionRule:'breakout',lockedPreviousRound:null,lockedPreviousDirection:null,lockedPreviousSource:null,
       directionSelectedAt:now,breakoutSince:now,changedAt:now,tradeFromRound:Math.floor(now/300000)*300+300,formedFrom:'historical_breakout'};
   }
   if(prior?.phase!=='range')state={...state,id:null,formedAt:now,changedAt:now,direction:null,lockedDirectionRule:null,lockedPreviousRound:null,lockedPreviousDirection:null,lockedPreviousSource:null,
-    directionSelectedAt:null,breakoutSince:null,tradeFromRound:prior?.tradeFromRound??null,formedFrom:'price_in_range'};
+    rangeBaseDirection:null,rangeBaseDirectionRule:null,directionSelectedAt:null,breakoutSince:null,tradeFromRound:prior?.tradeFromRound??null,formedFrom:'price_in_range'};
   if(!state.direction&&vote.complete){
     const tied=vote.up===vote.down,selected=tied?(['UP','DOWN'].includes(vote.previousDirection)?(vote.previousDirection==='UP'?'DOWN':'UP'):null):vote.direction;
-    if(selected)state={...state,id:null,direction:selected,lockedDirectionRule:tied?'tie_reverse_previous':'range_majority',
+    if(selected)state={...state,id:null,direction:selected,rangeBaseDirection:selected,rangeBaseDirectionRule:tied?'tie_reverse_previous':'range_majority',lockedDirectionRule:tied?'tie_reverse_previous':'range_majority',
       lockedPreviousRound:tied?vote.previousRound:null,lockedPreviousDirection:tied?vote.previousDirection:null,lockedPreviousSource:tied?vote.previousSource:null,
       directionSelectedAt:now,changedAt:now,upCount:vote.up,downCount:vote.down};
+  }
+  // Once the range has a selected direction, move to mean reversion while
+  // price hugs an edge.  The middle keeps the existing locked/vote direction.
+  if(state.phase==='range' && state.rangeBaseDirection){
+    if(candidate.edgeHint)state={...state,direction:candidate.edgeHint,lockedDirectionRule:'range_edge_reversion',changedAt:now,
+      directionSelectedAt:state.direction===candidate.edgeHint?state.directionSelectedAt:now};
+    else state={...state,direction:state.rangeBaseDirection,lockedDirectionRule:state.rangeBaseDirectionRule||'range_majority'};
   }
   return state;
 }

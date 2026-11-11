@@ -57,7 +57,8 @@ export class RangeEngine extends MomentumEngine {
     if(!state.direction)return {direction:null,code:'RANGE_VOTE_INCOMPLETE',message:
       `已形成稳定区间；近 ${config.lookbackHours} 小时仅取得 ${vote.covered}/${vote.expected} 场方向，继续补齐`,state,candidate,vote};
     const message=state.phase==='range'?
-      (state.lockedDirectionRule==='tie_reverse_previous'?`区间已锁定 ${state.direction}：选向时 UP ${state.upCount} / DOWN ${state.downCount} 同票，取上一场 #${state.lockedPreviousRound} ${state.lockedPreviousDirection} 的反方向；每场开盘沿用，不再按票数重新选向`:
+      (state.lockedDirectionRule==='range_edge_reversion'?`价格靠近${state.direction==='DOWN'?'上压力':'下支撑'}，买 ${state.direction}；回到区间中部后沿用原有区间选向逻辑`:
+      state.lockedDirectionRule==='tie_reverse_previous'?`区间已锁定 ${state.direction}：选向时 UP ${state.upCount} / DOWN ${state.downCount} 同票，取上一场 #${state.lockedPreviousRound} ${state.lockedPreviousDirection} 的反方向；每场开盘沿用，不再按票数重新选向`:
       `价格位于历史区间，已锁定 ${state.direction}，选向时 UP ${state.upCount} / DOWN ${state.downCount}；每场开盘沿用。当前上界 ${state.actualUpper.toFixed(2)} / 下界 ${state.actualLower.toFixed(2)}，每场结束重算`):
       `${state.phase==='breakout_up'?'上穿实际最高价':'下穿实际最低价'} ${(state.phase==='breakout_up'?state.actualUpper:state.actualLower).toFixed(2)}，持续买 ${state.direction}；${state.tradeFromRound?`从场次 #${state.tradeFromRound} 开盘起沿用`:'每场开盘沿用'}，价格回到更新后的历史区间内即按票数重新选向`;
     return {direction:state.direction,code:null,message,state,candidate,vote,directionRule:state.lockedDirectionRule};
