@@ -48,7 +48,10 @@ export function analyzeLevels(bars,config,now){
       firstAt:parts[0].firstAt,lastAt:parts.at(-1).lastAt,maxGapMs:quality.maxGapMs,complete:quality.maxGapMs<=RANGE_MAX_GAP_MS,received:parts.length});
   }
   const lower=candles.length?Math.min(...candles.map(bar=>bar.low)):null,upper=candles.length?Math.max(...candles.map(bar=>bar.high)):null;
+  const peaks=candles.slice(1,-1).filter((bar,i)=>bar.high>=candles[i].high&&bar.high>=candles[i+2].high).sort((a,b)=>b.high-a.high);
+  const valleys=candles.slice(1,-1).filter((bar,i)=>bar.low<=candles[i].low&&bar.low<=candles[i+2].low).sort((a,b)=>a.low-b.low);
   const result={start,end,timeframeMinutes:15,lookbackHours:config.levelLookbackHours,expected:config.levelLookbackHours*4,received:candles.length,validCandles:candles.filter(bar=>bar.complete).length,
+    peak:peaks[0]?.high??null,secondaryPeak:peaks[1]?.high??null,valley:valleys[0]?.low??null,secondaryValley:valleys[1]?.low??null,
     maxGapMs:history.maxGapMs,gapLimitMs:RANGE_MAX_GAP_MS,candles,lower,upper,actualLower:lower,actualUpper:upper,
     widthPercent:lower>0?(upper-lower)/((upper+lower)/2)*100:null,supportSource:'rolling_extremes',resistanceSource:'rolling_extremes',ready:false};
   if(history.invalid)return {...result,code:'RANGE_LEVEL_HISTORY_INVALID',message:`历史报价无效：${String(history.invalid.bucket)}`};
