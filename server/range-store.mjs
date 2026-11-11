@@ -80,8 +80,10 @@ export class RangeStore extends Store {
     if(!this.rangeReady||!Number.isFinite(oracleWindow)||!Number.isFinite(open)||!Number.isFinite(close))return;
     this.transaction(()=>{
       const start=round*1000,end=(round+300)*1000-1;
-      this.upsertBar.run(oracleWindow,start,open,open,open,open,start,start);
-      this.upsertBar.run(oracleWindow,end,close,close,close,close,end,end);
+      const startBucket=Math.floor(start/RANGE_BUCKET_MS)*RANGE_BUCKET_MS;
+      const endBucket=Math.floor(end/RANGE_BUCKET_MS)*RANGE_BUCKET_MS;
+      this.upsertBar.run(oracleWindow,startBucket,open,open,open,open,start,start);
+      this.upsertBar.run(oracleWindow,endBucket,close,close,close,close,end,end);
     });
   }
   rangeBars(window,start,end){return this.db.prepare('SELECT bucket,open,high,low,close,first_at AS firstAt,last_at AS lastAt,max_gap_ms AS maxGapMs,samples FROM range_price_bars WHERE oracle_window=? AND bucket>=? AND bucket<? ORDER BY bucket').all(window,start,end);}
