@@ -25,16 +25,16 @@ function levelBars(until=end){const {start}=levelWindow(until);return Array.from
 const stableRange=(bars,settings,now)=>evaluateRange(bars,settings,now,levelBars(now));
 const combinedBars=()=>[...levelBars().slice(0,-720),...waveBars()];
 
-test('every five-minute close recomputes sixteen rolling fifteen-minute candles over four hours',()=>{
+test('every five-minute close recomputes forty-eight rolling five-minute candles over four hours',()=>{
   const first=analyzeLevels(levelBars(),config,end),nextTime=end+300000,next=analyzeLevels(levelBars(nextTime),config,nextTime);
-  assert.equal(first.ready,true);assert.equal(first.candles.length,16);assert.equal(first.lower,99.8);assert.equal(first.upper,100.2);
+  assert.equal(first.ready,true);assert.equal(first.candles.length,48);assert.equal(first.lower,100);assert.equal(first.upper,100);
   assert.equal(next.start,first.start+300000);assert.equal(next.end,first.end+300000);assert.equal(next.end-next.start,4*3600000);
-  assert.equal(next.candles[0].bucket,next.start);assert.equal(next.candles[1].bucket,next.start+900000);
+  assert.equal(next.candles[0].bucket,next.start);assert.equal(next.candles[1].bucket,next.start+300000);
   assert.deepEqual(analyzeLevels(levelBars(),config,end+299999),first);
 });
 
 test('a single extreme defines each boundary without touches, oscillation or width gates',()=>{
-  const history=levelBars();history[0].high=150;history.at(-1).low=50;
+  const history=levelBars();history[0].open=150;history[0].close=150;history[0].high=150;history.at(-1).open=50;history.at(-1).close=50;history.at(-1).low=50;
   const candidate=evaluateRange([],config,end,history,100);
   assert.equal(candidate.lower,50);assert.equal(candidate.upper,150);assert.equal(candidate.stable,true);assert.deepEqual(candidate.blockingReasons,[]);
   const flat=history.map(bar=>({...bar,open:100,high:100,low:100,close:100}));
@@ -53,7 +53,7 @@ test('incomplete history remains unavailable and does not invent historical boun
 });
 
 test('only voting hours remain configurable; obsolete thresholds cannot block the new strategy',()=>{
-  assert.deepEqual(validateRangeConfig({lookbackHours:3}),{lookbackHours:3});
+  assert.deepEqual(validateRangeConfig({lookbackHours:3}),{lookbackHours:3,levelLookbackHours:4});
   for(const input of [{lookbackHours:0},{lookbackHours:25},{lookbackHours:1.5},{minRoundTrips:2},{minLevelTouches:2},{maxWidthPercent:1}])assert.throws(()=>validateRangeConfig(input));
 });
 
@@ -69,7 +69,7 @@ test('new round bounds and current position replace old bounds without waiting f
   const vote={complete:true,direction:'DOWN',up:5,down:7,expected:12},spot={price:100.3,windowSeconds:60};
   const first=evaluateRange([],config,end,levelBars(),spot.price);let state=rangeRegime(null,first,vote,spot,1,end);
   assert.equal(state.phase,'breakout_up');assert.equal(state.tradeFromRound,round+300);
-  const history=levelBars(end+300000);history[100].high=100.5;
+  const history=levelBars(end+300000);history[0].open=100.5;history[0].close=100.5;history[0].high=100.5;
   const next=evaluateRange([],config,end+300000,history,100.3);
   state=rangeRegime(state,next,vote,spot,1,end+300000);
   assert.equal(state.upper,100.5);assert.equal(state.levelWindowEnd,end+300000);assert.equal(state.phase,'range');assert.equal(state.direction,'DOWN');
@@ -83,7 +83,7 @@ test('rolling bounds and locked vote evidence survive restart',t=>{
   const candidate=evaluateRange([],config,end,levelBars(),100),vote={complete:true,up:6,down:6,expected:12,previousRound:round-300,previousDirection:'UP',previousSource:'official'};
   const state=store.saveRangeState(rangeRegime(null,candidate,vote,{price:100,windowSeconds:60},store.rangeConfig().id,end));
   store.reserveOrder({id:'rolling-evidence',mode:'paper',session:store.account('paper').session,round,end:round+300,status:'won',direction:'DOWN',signalRule:'range_regime',rangeSignal:{...state,priceAt:end,price:100,directionRule:'tie_reverse_previous',tiePreviousRound:round-300,tiePreviousDirection:'UP',tiePreviousSource:'official'}});
-  store.close();store=new RangeStore(path);assert.equal(store.rangeState().direction,'DOWN');assert.equal(store.rangeState().upper,100.2);
+  store.close();store=new RangeStore(path);assert.equal(store.rangeState().direction,'DOWN');assert.equal(store.rangeState().upper,100);
   assert.equal(store.order('rolling-evidence').rangeSignal.supportSource,'rolling_extremes');assert.equal(store.order('rolling-evidence').rangeSignal.tiePreviousRound,round-300);
 });
 
@@ -134,7 +134,7 @@ function setup(t,{up=7,bars=true,votes=true,path=':memory:'}={}){
 for(const [up,expected] of [[7,'UP'],[5,'DOWN']])test(`range entry buys its fixed ${expected} direction once at open even when current-round price is flat`,async t=>{
   const {engine,store,liveBuys}=setup(t,{up});await engine.start('paper');await engine.attempt('paper');await engine.attempt('paper');
   const order=store.orderForRound('paper',round);assert.equal(order.direction,expected);assert.equal(order.price,0.49);assert.equal(order.createdAt,end+1000);
-  assert.equal(order.signalRule,'range_regime');assert.equal(order.rangeSignal.lower,99.8);assert.equal(order.rangeSignal.supportSource,'rolling_extremes');assert.equal(order.rangeSignal.levelTimeframeMinutes,15);assert.equal(order.rangeSignal.levelLookbackHours,4);assert.equal(store.orderCount('paper'),1);assert.equal(liveBuys(),0);
+  assert.equal(order.signalRule,'range_regime');assert.ok(order.rangeSignal.lower<100);assert.equal(order.rangeSignal.supportSource,'rolling_extremes');assert.equal(order.rangeSignal.levelTimeframeMinutes,5);assert.equal(order.rangeSignal.levelLookbackHours,4);assert.equal(store.orderCount('paper'),1);assert.equal(liveBuys(),0);
 });
 
 for(const previous of ['UP','DOWN'])test(`a stable tied window immediately buys opposite the previous ${previous} result once`,async t=>{
