@@ -111,13 +111,13 @@ h1 { font-size: 26px; letter-spacing: -.6px; font-weight: 650; display: flex; al
 .market-identity h2 span { font-family: 'DM Sans', sans-serif; font-size: 10px; letter-spacing: .6px; color: #8994a1; background: #242b34; padding: 4px 6px; border-radius: 3px; }
 .market-identity p { font-size: 10px; color: #788391; margin-top: 6px; }
 .market-identity p span { margin: 0 5px; color: #46515f; }
-.round-link { display: flex; align-items: center; gap: 7px; color: #8794a4; font-size: 10px; }
+.round-link { display: flex; align-items: center; gap: 7px; color: #8794a4; font-size: 12px; }
 .round-link:hover { color: #b2ddc5; }
-.round-timing { display: flex; align-items: center; gap: 9px; font-size: 10px; padding: 0 21px 11px; }
+.round-timing { display: flex; align-items: center; gap: 9px; font-size: 12px; padding: 0 21px 11px; }
 .active-label { display: flex; align-items: center; gap: 6px; color: #9fd0b8; }
 .active-label i { background: #75d6a9; }
-.round-slug { color: #4f5e70; font-family: var(--mono); font-size: 10px; }
-.countdown { display: flex; align-items: center; gap: 6px; color: #727f8e; margin-left: auto; font-size: 9px; }
+.round-slug { color: #4f5e70; font-family: var(--mono); font-size: 12px; }
+.countdown { display: flex; align-items: center; gap: 6px; color: #727f8e; margin-left: auto; font-size: 12px; }
 .countdown strong { font-family: var(--mono); font-size: 14px; font-weight: 500; color: #cbd5dd; margin-left: 3px; font-variant-numeric: tabular-nums; }
 .round-progress { height: 2px; background: #222e2b; margin: 0 21px; }
 .round-progress span { display: block; height: 100%; background: #79c8a9; transition: width .3s; }
@@ -408,7 +408,7 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
   .signal-bar p span { font-size: 10px; }
   .market-identity h2 { font-size: 14px; gap: 6px; }
   .market-identity h2 span { font-size: 7px; }
-  .round-link { font-size: 9px; }
+  .round-link { font-size: 12px; }
   .history-panel th, .history-panel td { padding-left: 12px; padding-right: 12px; }
   .footer p { font-size: 7px; }
   .cycle-panel { padding-left: 13px; padding-right: 13px; }
@@ -476,7 +476,7 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
   .top-actions { gap: 12px; }
   .connection { font-size: 10px; }
   .market-heading { padding-left: 15px; padding-right: 15px; }
-  .round-link { font-size: 10px; }
+  .round-link { font-size: 12px; }
   .chart-toolbar { padding-left: 15px; padding-right: 15px; }
   .price-chart { margin-left: 5px; min-height: 180px; }
   .chart-legend { font-size: 7px; gap: 9px; margin: 5px 15px 19px; }
@@ -489,7 +489,7 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
   .outcome>div>small { font-size: 7px; }
   .outcome-price>span { font-size: 7px; }
   .round-timing { padding-left: 15px; padding-right: 15px; }
-  .countdown { font-size: 10px; }
+  .countdown { font-size: 12px; }
   .countdown svg { display: none; }
   .round-progress { margin-left: 15px; margin-right: 15px; }
   .strategy-panel { padding: 18px 16px; }
@@ -515,12 +515,12 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
   .market-identity h2 { font-size: 17px; }
   .market-identity h2 span { display: inline; font-size: 10px; }
   .market-heading { padding: 20px; }
-  .round-link { font-size: 10px; }
+  .round-link { font-size: 12px; }
   .market-identity { gap: 10px; }
   .bitcoin { width: 38px; height: 38px; font-size: 29px; }
   .round-timing { padding-left: 20px; padding-right: 20px; }
-  .round-slug { display: block; font-size: 10px; }
-  .countdown { font-size: 9px; gap: 6px; }
+  .round-slug { display: block; font-size: 12px; }
+  .countdown { font-size: 12px; gap: 6px; }
   .countdown svg { display: block; }
   .round-progress { margin-left: 20px; margin-right: 20px; }
   .chart-toolbar { padding-left: 20px; padding-right: 20px; }
@@ -616,10 +616,10 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
   .market-identity h2 span { display: none; }
   .market-identity p { font-size: 9px; }
   .bitcoin { width: 33px; height: 33px; font-size: 26px; }
-  .round-link { font-size: 9px; gap: 4px; }
+  .round-link { font-size: 12px; gap: 4px; }
   .round-timing { padding-left: 14px; padding-right: 14px; }
   .round-slug { display: none; }
-  .countdown { font-size: 10px; gap: 5px; }
+  .countdown { font-size: 12px; gap: 5px; }
   .countdown strong { font-size: 13px; }
   .round-progress { margin-left: 14px; margin-right: 14px; }
   .chart-toolbar { padding: 21px 14px 0; }
@@ -792,7 +792,7 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
   .round-marker.reversed .round-result-dot { width: 15px; height: 15px; }
 }
 
-.range-panel { padding: 20px 22px; }
+.range-panel { padding: 20px 22px; margin-bottom: 20px; }
 .range-panel .panel-heading { margin-bottom: 15px; }
 .range-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; }
 .range-metrics>div { display: flex; flex-direction: column; gap: 7px; }
