@@ -12,9 +12,9 @@ export default function RangeStatus({state}){
       <div className="range-metrics"><div><span>方向统计窗口</span><strong>{config?.lookbackHours??2} 小时</strong></div><div><span>当前状态</span><strong>{phase}</strong></div><div><span>历史下界 / 上界</span><strong>{number(candidate?.lower)} – {number(candidate?.upper)}</strong></div><div><span>买入方向</span><strong className={direction==='UP'?'green':direction==='DOWN'?'red':''}>{direction||'等待方向'}</strong></div></div>
       <div className="range-observations"><span>当前价格 <b>{number(state?.spot?.price)}</b></span><span>近 {config?.lookbackHours??2} 小时 <b className="green">UP {vote?.up??0}</b> · <b className="red">DOWN {vote?.down??0}</b></span><span>方向数据 {vote?.covered??0}/{vote?.expected??'—'} 场</span></div>
       <p className="range-data-note">当前价格在历史上下界内即为区间内；不要求往返次数、触及次数或宽度限制。</p>
-      <p className="range-data-note">上下界来源：近 4 小时官方报价，16 根滚动 15 分钟 K 线的实际最高/最低价 · 每场结束重算</p>
+      <p className="range-data-note">上下界来源：近 {config?.levelLookbackHours??4} 小时官方报价，{(config?.levelLookbackHours??4)*4} 根滚动 15 分钟 K 线的实际最高/最低价 · 每场结束重算</p>
       <p className="range-data-note">本场使用窗口：{stamp(levels?.start)} – {stamp(levels?.end)} · 下次更新：{stamp(levels?.end?levels.end+300000:null)}</p>
-      <p className="range-data-note">有效 K 线 {levels?.validCandles??0}/16 根 · 最长断档 {number(Number.isFinite(levels?.maxGapMs)?levels.maxGapMs/1000:null)} 秒 / 允许 600 秒</p>
+      <p className="range-data-note">有效 K 线 {levels?.validCandles??0}/{levels?.expected??((config?.levelLookbackHours??4)*4)} 根 · 最长断档 {number(Number.isFinite(levels?.maxGapMs)?levels.maxGapMs/1000:null)} 秒 / 允许 600 秒</p>
       <p className="range-data-note">入场检测：开盘立即开始，截止开盘后 {Number(minutes.toFixed(4))} 分钟；每场最多买入一次</p>
       {regime?.tradeFromRound&&<p className="range-data-note">突破后最早执行场次：#{regime.tradeFromRound} · {stamp(regime.tradeFromRound*1000)}</p>}
       {!levels?.ready&&candidate?.blockingReasons?.length>0&&<div className="range-blockers"><strong>历史数据尚未就绪</strong><ul>{candidate.blockingReasons.map(reason=><li key={reason.code}>{reason.message}</li>)}</ul></div>}
