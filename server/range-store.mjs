@@ -21,14 +21,14 @@ export class RangeStore extends Store {
       CREATE TABLE IF NOT EXISTS range_order_signals(order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,regime_id INTEGER NOT NULL REFERENCES range_regimes(id),observed_at INTEGER NOT NULL,observed_price REAL NOT NULL);
       CREATE INDEX IF NOT EXISTS range_tick_window ON ticks(source,oracle_window,time);
     `);
-    for(const [table,columns] of Object.entries({range_configs:{min_level_touches:'INTEGER NOT NULL DEFAULT 2',level_tolerance_percent:'REAL NOT NULL DEFAULT 0.05'},range_regimes:{trade_from_round:'INTEGER',formed_from:'TEXT',actual_lower:'REAL',actual_upper:'REAL',locked_direction_rule:'TEXT',locked_previous_round:'INTEGER',locked_previous_direction:'TEXT',locked_previous_source:'TEXT',direction_selected_at:'INTEGER',support_source:"TEXT NOT NULL DEFAULT 'touches'",resistance_source:"TEXT NOT NULL DEFAULT 'touches'",level_timeframe_minutes:'INTEGER NOT NULL DEFAULT 0',level_lookback_hours:'INTEGER NOT NULL DEFAULT 0',level_window_start:'INTEGER',level_window_end:'INTEGER',support_touches:'INTEGER NOT NULL DEFAULT 0',resistance_touches:'INTEGER NOT NULL DEFAULT 0',width_percent:'REAL',round_trips:'INTEGER NOT NULL DEFAULT 0'}})){
+    for(const [table,columns] of Object.entries({range_configs:{level_lookback_hours:'INTEGER NOT NULL DEFAULT 4',min_level_touches:'INTEGER NOT NULL DEFAULT 2',level_tolerance_percent:'REAL NOT NULL DEFAULT 0.05'},range_regimes:{trade_from_round:'INTEGER',formed_from:'TEXT',actual_lower:'REAL',actual_upper:'REAL',locked_direction_rule:'TEXT',locked_previous_round:'INTEGER',locked_previous_direction:'TEXT',locked_previous_source:'TEXT',direction_selected_at:'INTEGER',support_source:"TEXT NOT NULL DEFAULT 'touches'",resistance_source:"TEXT NOT NULL DEFAULT 'touches'",level_timeframe_minutes:'INTEGER NOT NULL DEFAULT 0',level_lookback_hours:'INTEGER NOT NULL DEFAULT 0',level_window_start:'INTEGER',level_window_end:'INTEGER',support_touches:'INTEGER NOT NULL DEFAULT 0',resistance_touches:'INTEGER NOT NULL DEFAULT 0',width_percent:'REAL',round_trips:'INTEGER NOT NULL DEFAULT 0'}})){
       const names=new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(column=>column.name));
       for(const [name,type] of Object.entries(columns))if(!names.has(name))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
     }
     const signalColumns=new Set(this.db.prepare('PRAGMA table_info(range_order_signals)').all().map(column=>column.name));
     for(const [key,column] of Object.entries(decisionFields))if(!signalColumns.has(column))this.db.exec(`ALTER TABLE range_order_signals ADD COLUMN ${column} ${key.endsWith('Count')||key.endsWith('Round')?'INTEGER':'TEXT'}`);
     if(!this.db.prepare('SELECT 1 FROM range_control').get())this.transaction(()=>{
-      const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,max_width_percent,min_round_trips,created_at) VALUES (?,?,?,?)').run(RANGE_DEFAULTS.lookbackHours,1,0,Date.now());
+      const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,level_lookback_hours,max_width_percent,min_round_trips,created_at) VALUES (?,?,?,?,?)').run(RANGE_DEFAULTS.lookbackHours,RANGE_DEFAULTS.levelLookbackHours,1,0,Date.now());
       this.db.prepare('INSERT INTO range_control VALUES (1,?,NULL)').run(result.lastInsertRowid);
     });
     // Retain old order evidence, but never reuse five-second levels for new entries.
@@ -43,11 +43,11 @@ export class RangeStore extends Store {
       first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at),samples=samples+1`);
   }
   freshAccount(mode,config=RANGE_TRADING_CONFIG){return super.freshAccount(mode,config);}
-  rangeConfig(){return {...this.db.prepare('SELECT c.id,c.lookback_hours AS lookbackHours FROM range_configs c JOIN range_control s ON s.config_id=c.id WHERE s.id=1').get()};}
+  rangeConfig(){return {...this.db.prepare('SELECT c.id,c.lookback_hours AS lookbackHours,c.level_lookback_hours AS levelLookbackHours FROM range_configs c JOIN range_control s ON s.config_id=c.id WHERE s.id=1').get()};}
   saveRangeConfig(input){
     const config=validateRangeConfig(input),previous=this.rangeConfig();
     if(Object.keys(config).every(key=>config[key]===previous[key]))return previous;
-    const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,max_width_percent,min_round_trips,min_level_touches,level_tolerance_percent,created_at) VALUES (?,?,?,?,?,?)').run(config.lookbackHours,1,0,0,0,Date.now());
+    const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,level_lookback_hours,max_width_percent,min_round_trips,min_level_touches,level_tolerance_percent,created_at) VALUES (?,?,?,?,?,?,?)').run(config.lookbackHours,config.levelLookbackHours,1,0,0,0,Date.now());
     this.db.prepare('UPDATE range_control SET config_id=?,regime_id=NULL WHERE id=1').run(result.lastInsertRowid);
     return this.rangeConfig();
   }
