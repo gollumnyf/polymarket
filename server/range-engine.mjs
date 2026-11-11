@@ -7,7 +7,28 @@ import {stableRange,classifyRange,rangeRegime,RANGE_BUCKET_MS,levelWindow,valida
 export class RangeEngine extends MomentumEngine {
   constructor(store,venue,options={}){
     super(store,venue,options);
-    this.voteRevision=0;this.lastVotePoll=0;this.voteTask=null;this.analysisCache=null;
+    this.voteRevision=0;this.lastVotePoll=0;this.voteTask=null;this.backfillTask=null;this.lastBackfill=0;this.analysisCache=null;
+  }
+  backfillMarketHistory(){
+    if(this.backfillTask||!this.venue.fetch||!this.spot?.windowSeconds||this.now()-this.lastBackfill<30000)return;
+    this.lastBackfill=this.now();
+    const window=this.spot.windowSeconds, end=Math.floor(this.now()/300000)*300, start=end-4*3600;
+    this.backfillTask=(async()=>{
+      const rounds=[];for(let round=start;round<end;round+=300)rounds.push(round);
+      for(let i=0;i<rounds.length;i+=8){
+        const batch=rounds.slice(i,i+8);
+        await Promise.all(batch.map(async round=>{
+          try{
+            const params=new URLSearchParams({symbol:'BTC',eventStartTime:new Date(round*1000).toISOString(),endDate:new Date((round+300)*1000).toISOString(),variant:'fiveminute',twapEnabled:String(window>0),twapLookbackSeconds:String(window||60)});
+            const response=await this.venue.fetch(`https://polymarket.com/api/crypto/crypto-price?${params}`);
+            if(!response.ok)return;
+            const data=await response.json(),open=Number(data.openPrice),close=Number(data.closePrice);
+            if(Number.isFinite(open)&&open>0&&Number.isFinite(close)&&close>0)this.store.marketRound(round,open,close,window);
+          }catch{/* remote history is best effort; live RTDS remains authoritative */}
+        }));
+      }
+      this.analysisCache=null;
+    })().finally(()=>{this.backfillTask=null;});
   }
   voteSummary(config,window){
     const latest=roundStart(this.now())-300,expected=config.lookbackHours*12;
@@ -134,5 +155,5 @@ export class RangeEngine extends MomentumEngine {
       this.voteRevision++;
     })().catch(error=>{if(!this.closing)this.runtimeIssue('paper',`区间历史方向暂不可用，自动重试：${safeError(error)}`);}).finally(()=>{this.voteTask=null;});
   }
-  async tick(){this.pollVoteHistory();return super.tick();}
+  async tick(){this.pollVoteHistory();this.backfillMarketHistory();return super.tick();}
 }

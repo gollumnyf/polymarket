@@ -72,6 +72,18 @@ export class RangeStore extends Store {
       if(result.changes)this.upsertBar.run(oracleWindow,Math.floor(time/RANGE_BUCKET_MS)*RANGE_BUCKET_MS,price,price,price,price,time,time);
     });
   }
+  // Polymarket's market endpoint exposes official round open/close prices but
+  // not the granular RTDS stream. Store those sparse official points so a
+  // bounded five-minute gap can be evaluated without inventing intermediate
+  // prices.
+  marketRound(round,open,close,oracleWindow){
+    if(!this.rangeReady||!Number.isFinite(oracleWindow)||!Number.isFinite(open)||!Number.isFinite(close))return;
+    this.transaction(()=>{
+      const start=round*1000,end=(round+300)*1000-1;
+      this.upsertBar.run(oracleWindow,start,open,open,open,open,start,start);
+      this.upsertBar.run(oracleWindow,end,close,close,close,close,end,end);
+    });
+  }
   rangeBars(window,start,end){return this.db.prepare('SELECT bucket,open,high,low,close,first_at AS firstAt,last_at AS lastAt,max_gap_ms AS maxGapMs,samples FROM range_price_bars WHERE oracle_window=? AND bucket>=? AND bucket<? ORDER BY bucket').all(window,start,end);}
   vote(round){return this.db.prepare('SELECT round,outcome,source,open_price AS open,close_price AS close,updated_at AS updatedAt FROM range_votes WHERE round=?').get(round)||null;}
   saveVote(vote){
