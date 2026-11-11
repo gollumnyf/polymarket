@@ -69,7 +69,7 @@ export function momentumSignal(spot,sample,now,start=roundStart(now)){
 
 export class MomentumEngine extends Engine {
   constructor(store,venue,options={}){
-    super(store,venue,{...options,modes:['paper']});
+    super(store,venue,{...options,modes:options.modes??['paper']});
     this.onPrice=point=>{
       if(this.closing)return;
       this.store.tick(point.time,point.price,'polymarket',point.oracleWindow);
@@ -77,7 +77,7 @@ export class MomentumEngine extends Engine {
         this.spot={...this.spot,price:point.price,at:point.time,direction:signalDirection(this.spot.currentOpen,point.price),
           change:this.spot.currentOpen==null?null:point.price-this.spot.currentOpen,
           changePercent:this.spot.currentOpen==null?null:(point.price-this.spot.currentOpen)/this.spot.currentOpen*100};
-        void this.attempt('paper').catch(error=>this.runtimeIssue('paper',`本次交易检查失败，下次继续重试：${safeError(error)}`,'error')).finally(()=>{if(!this.closing)this.broadcast();});
+        for(const mode of this.modes)void this.attempt(mode).catch(error=>this.runtimeIssue(mode,`本次交易检查失败，下次继续重试：${safeError(error)}`,'error')).finally(()=>{if(!this.closing)this.broadcast();});
       }
     };
     venue.priceFeed?.on?.('price',this.onPrice);
@@ -93,11 +93,11 @@ export class MomentumEngine extends Engine {
   orderSignalFields(){const s=this.signal();return {signalRule:'official_momentum',referencePrice:s.referencePrice,signalPrice:s.latestPrice,momentumSignal:s};}
   quote(book,budget,config,schedule){return simulateFill(book,budget,{...config,maxPrice:0.5},schedule,{strictTicks:true});}
   async attempt(mode){
-    if(mode!=='paper'||this.entryBusy||this.closing)return;
+    if(!this.modes.includes(mode)||this.entryBusy||this.closing)return;
     this.entryBusy=true;
     try{return await super.attempt(mode);}finally{this.entryBusy=false;}
   }
-  async start(mode){if(mode!=='paper')throw Error('此页面仅支持模拟交易');return super.start(mode);}
+  async start(mode){if(!this.modes.includes(mode))throw Error('此页面不支持该交易模式');return super.start(mode);}
   configure(mode,input){
     if(mode!=='paper')throw Error('此页面仅支持模拟交易');
     if(input.entryDelay!==0||input.maxPrice!==0.5||input.sameDirectionOnly||input.followPreviousAtOpen||input.reverseSignal)throw Error('此策略固定为官方双价格同向、零延迟、最高买价 0.50');

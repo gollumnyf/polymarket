@@ -2,9 +2,9 @@ import React from 'react';
 import {Activity,ArrowUpRight,ChevronDown,Info} from 'lucide-react';
 const number=value=>Number.isFinite(value)?value.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
 const stamp=value=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'—';
-export default function RangeStatus({state}){
+export default function RangeStatus({state,mode='paper'}){
   const config=state?.rangeConfig,candidate=state?.rangeAnalysis?.candidate,levels=candidate?.levelAnalysis,vote=state?.rangeAnalysis?.vote,regime=state?.rangeState;
-  const signal=state?.entrySignal,direction=signal?.direction,minutes=(state?.accounts?.paper?.config?.entryWindow??120)/60;
+  const signal=state?.entrySignal,direction=signal?.direction,minutes=(state?.accounts?.[mode]?.config?.entryWindow??120)/60;
   const phase=signal?.usingSavedRange?'沿用已存区间 · 补齐中':levels?.ready?(regime?.phase==='breakout_up'?'上穿已确认':regime?.phase==='breakout_down'?'下破已确认':regime?.breakoutPendingDirection?'突破待确认':candidate.stable?'历史区间内':'边界反向'):'等待历史行情';
   return <details className="panel range-panel">
     <summary className="panel-heading range-summary"><h2><Activity size={17}/>区间与突破</h2><span className="range-summary-status">{phase}{direction?' · '+direction:''}</span><span className="range-toggle"><span className="range-expand-label">展开</span><span className="range-collapse-label">收起</span><ChevronDown size={16}/></span></summary>
@@ -30,7 +30,7 @@ export default function RangeStatus({state}){
 }
 export function RangeGuide({config,entryWindow=120}){return <div className="guide">
   <div className="guide-step"><b>01</b><div><h3>历史上下界每场重算</h3><p>使用近 {config?.levelLookbackHours??4} 小时官方报价，按每个五分钟场次的起始时刻向前合成 {(config?.levelLookbackHours??4)*12} 根 5 分钟实体 K 线。最高价为上界，最低价为下界；当前场次的新价格不修改本场历史边界，每场结束后重新计算。缺失场次立即从 Polymarket 接口补取起止价，优先使用官方起止价计算实体；不因逐秒行情断档而拦截交易。补齐期间沿用同配置、同预言机的已存有效区间，补齐后立即更新；尚无任何有效区间时等待真实数据，不补造价格。</p></div></div>
-  <div className="guide-step"><b>02</b><div><h3>靠近边界反向，持续越界顺向</h3><p>当前价格位于上下界之间（包含边界）即属于区间内，无需观察往返、重复触及或限制宽度。首次按近 {config?.lookbackHours??2} 小时五分钟场次 UP/DOWN 多数选向；同票取上一场结果反方向，官方未结算用已有预测，缺少方向数据时等待。价格在中部时沿用已选方向；进入上侧 20% 边界带买 DOWN，进入下侧 20% 边界带买 UP，帮助价格回到区间中部。上穿或下破后固定参考上下界；连续 {config?.breakoutRounds??2} 个已结束场次的收盘价严格超过同一突破线才确认，距离为参考区间宽度的 {config?.breakoutPercent??0.1}%。等于突破线不算，同场不重复计数，缺少收盘数据等待补齐，收盘未达标重新计数。确认前越过压力仍买 DOWN、跌破支撑仍买 UP；确认时最新价格也须越线，才从下一场开始顺向买入。已确认后持续跟随，回到固定参考区间内再重新选向。</p></div></div>
+  <div className="guide-step"><b>02</b><div><h3>靠近边界反向，持续越界顺向</h3><p>当前价格位于上下界之间（包含边界）即属于区间内，无需观察往返、重复触及或限制宽度。首次按近 {config?.lookbackHours??2} 小时五分钟场次 UP/DOWN 多数选向；同票取上一场结果反方向，官方未结算用已有预测，缺少方向数据时等待。价格在中部时沿用已选方向；进入上侧 20% 边界带买 DOWN，进入下侧 20% 边界带买 UP，帮助价格回到区间中部。上穿或下破后固定参考上下界；连续 {config?.breakoutRounds??2} 个已结束场次的收盘价严格超过同一突破线才确认，距离为参考区间宽度的 {config?.breakoutPercent??0.1}%。等于突破线不算，同场不重复计数，只统计截至上一场的连续收盘；缺少数据、回落或反向均中断计数，补齐后重新核对。确认前越过压力仍买 DOWN、跌破支撑仍买 UP；确认时最新价格也须越线，才从下一场开始顺向买入。已确认后持续跟随，回到固定参考区间内再重新选向。</p></div></div>
   <div className="guide-step"><b>03</b><div><h3>开盘检测与马丁资金</h3><p>从开盘立即检测，到开盘后 {Number((entryWindow/60).toFixed(4))} 分钟截止。买价严格低于 0.50，检查 tick、最小份额、深度和手续费。每场最多一次；失利翻倍，获胜复位，金额超限从首笔开始。错误记录后重试，配置、行情、每单方向依据和区间历史均保存在 SQLite。</p></div></div>
   <a className="text-button" href="https://polymarket.com/crypto" target="_blank" rel="noreferrer">查看 Polymarket 市场 <ArrowUpRight size={14}/></a>
 </div>;}

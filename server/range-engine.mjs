@@ -68,10 +68,10 @@ export class RangeEngine extends MomentumEngine {
     const official=Number.isFinite(window)?this.store.marketPrices(window,round,round+300)[0]:null;
     if(valid(official?.open)&&valid(official?.close))return prices(official.open,official.close,'polymarket_crypto_price',official.fetchedAt);
     const prediction=this.store.roundPrediction(round);
-    if(prediction?.oracleWindow===window&&valid(prediction.open)&&valid(prediction.close)&&
+    if(prediction&&Number.isFinite(window)&&prediction.oracleWindow===window&&valid(prediction.open)&&valid(prediction.close)&&
       ['polymarket_event_metadata','polymarket_crypto_price','polymarket_last_second'].includes(prediction.source))
       return prices(prediction.open,prediction.close,prediction.source,prediction.observedAt);
-    const opening=this.store.roundOpening(round),tick=opening?.oracleWindow===window?this.store.lastSecondTick(round,window):null;
+    const opening=this.store.roundOpening(round),tick=opening&&Number.isFinite(window)&&opening.oracleWindow===window?this.store.lastSecondTick(round,window):null;
     if(valid(opening?.open)&&valid(tick?.price))return prices(opening.open,tick.price,'polymarket_last_second',tick.time);
     // The cached record is a market vote, never an order prediction.
     return cached||{round,outcome:null,source:'pending'};
@@ -117,13 +117,13 @@ export class RangeEngine extends MomentumEngine {
         const history=this.store.historicalRound(round),prediction=this.store.roundPrediction(round),storedVote=this.store.vote(round),official=this.store.marketPrices(spot.windowSeconds,round,round+300)[0];
         const valid=value=>Number.isFinite(value)&&value>0;
         let close=null,source=null;
-        if(history?.status==='void'||storedVote?.source==='official_void'){completedRounds.push({round,invalid:true});break;}
+        if(history?.status==='void'||storedVote?.source==='official_void'){completedRounds.push({round,invalid:true});continue;}
         if(valid(history?.close)){close=history.close;source='polymarket_event_metadata';}
         else if(valid(official?.close)){close=official.close;source='polymarket_crypto_price';}
         else if(prediction?.oracleWindow===spot.windowSeconds&&valid(prediction.close)){close=prediction.close;source=prediction.source;}
         else if(valid(storedVote?.close)&&['official','polymarket_event_metadata','polymarket_crypto_price'].includes(storedVote.source)){close=storedVote.close;source=storedVote.source;}
         else {const tick=this.store.lastSecondTick(round,spot.windowSeconds);if(tick){close=tick.price;source='polymarket_last_second';}}
-        if(!valid(close))break;
+        if(!valid(close)){completedRounds.push({round,invalid:true});continue;}
         completedRounds.push({round,close,source});
       }
     }
@@ -203,6 +203,8 @@ export class RangeEngine extends MomentumEngine {
     const config=validateConfig(trading);
     if(config.entryDelay!==0||config.maxPrice!==0.5||config.sameDirectionOnly||config.followPreviousAtOpen||config.reverseSignal)throw Error('区间策略固定零延迟、区间/突破方向和买价严格低于 0.50');
     const requested=rangeConfig?validateRangeConfig(rangeConfig):null;
+    const sharedChanged=config.entryWindow!==account.config.entryWindow||requested&&Object.keys(requested).some(key=>requested[key]!==this.store.rangeConfig()[key]);
+    if(sharedChanged&&[...(this.followers||[])].some(engine=>engine.store.account('live').running||engine.store.pending('live').length))throw Error('实盘正在运行或有待结算订单，请先暂停实盘并等待结算后修改共用区间参数和检测时长');
     this.store.transaction(()=>{if(requested)this.store.saveRangeConfig(requested);this.store.saveAccount({...account,config});});
     this.analysisCache=null;this.log(mode,'info','区间策略参数已保存；资金序列保留');this.broadcast();
   }

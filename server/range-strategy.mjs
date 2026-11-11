@@ -89,7 +89,7 @@ export function stableRange(bars,config,now,levelHistory=bars,price=null,officia
   return classifyRange(base,price);
 }
 
-// Confirmation uses distinct completed rounds against a frozen reference range.
+// Only the consecutive streak ending at the latest completed round can confirm.
 export function rangeRegime(previous,candidate,vote,spot,configId,now){
   if(!candidate.levelAnalysis.ready)return null;
   const prior=previous&&previous.configId===configId&&previous.oracleWindow===spot.windowSeconds&&previous.supportSource==='rolling_extremes'?previous:null;
@@ -116,18 +116,21 @@ export function rangeRegime(previous,candidate,vote,spot,configId,now){
     Object.assign(state,{breakoutCount:0,breakoutLastRound:null,breakoutLastClose:null,breakoutLastSource:null});
     for(let closed=state.breakoutStartRound;closed<round;closed+=300){
       const evidence=candidate.completedRounds?.find(item=>item.round===closed);
-      if(evidence?.invalid){clearConfirmation();break;}
-      if(!evidence||!Number.isFinite(evidence.close)||evidence.close<=0)break;
-      if(!beyond(evidence.close,state.breakoutReferenceLower,state.breakoutReferenceUpper,state.breakoutPendingDirection)){clearConfirmation();break;}
+      if(evidence?.invalid||!evidence||!Number.isFinite(evidence.close)||evidence.close<=0||
+        !beyond(evidence.close,state.breakoutReferenceLower,state.breakoutReferenceUpper,state.breakoutPendingDirection)){
+        Object.assign(state,{breakoutCount:0,breakoutLastRound:null,breakoutLastClose:null,breakoutLastSource:null});
+        continue;
+      }
       Object.assign(state,{breakoutLastRound:closed,breakoutCount:(state.breakoutCount??0)+1,breakoutLastClose:evidence.close,breakoutLastSource:evidence.source});
-      if(state.breakoutCount>=required){
+    }
+    if(state.breakoutCount>=required){
         if(beyond(spot.price,state.breakoutReferenceLower,state.breakoutReferenceUpper,state.breakoutPendingDirection)){
-          Object.assign(state,{phase:state.breakoutPendingDirection==='UP'?'breakout_up':'breakout_down',direction:state.breakoutPendingDirection,lockedDirectionRule:'breakout',breakoutSince:now,breakoutConfirmedAt:now,directionSelectedAt:now,tradeFromRound:closed+300,formedFrom:'confirmed_breakout'});
+          Object.assign(state,{phase:state.breakoutPendingDirection==='UP'?'breakout_up':'breakout_down',direction:state.breakoutPendingDirection,lockedDirectionRule:'breakout',breakoutSince:now,breakoutConfirmedAt:now,directionSelectedAt:now,tradeFromRound:round,formedFrom:'confirmed_breakout'});
           return finish();
         }
-        clearConfirmation();break;
-      }
+        clearConfirmation();
     }
+    else if(state.breakoutStartRound<round&&state.breakoutCount===0)clearConfirmation();
   }
   if(!state.breakoutPendingDirection){
     const direction=outside(spot.price,candidate.lower,candidate.upper);

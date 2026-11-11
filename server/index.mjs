@@ -2,18 +2,15 @@ import express from 'express';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
-import { Store } from './store.mjs';
 import { Polymarket, safeError } from './polymarket.mjs';
-import { Engine } from './engine.mjs';
 import { RoundHistory } from './history.mjs';
 import {MomentumEngine} from './momentum.mjs';
 import {RangeEngine} from './range-engine.mjs';
+import {RangeLiveEngine} from './range-live-engine.mjs';
 import {RangeStore} from './range-store.mjs';
 import {paperReport} from './reports.mjs';
 
-export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,momentumReportStore=null,rangeEngine=null,allowedModes=['paper','live'] } = {}) {
+export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,allowedModes=['paper','live'] } = {}) {
   const app = express();
   app.disable('x-powered-by');
   if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,allowedModes:['paper']}));
@@ -39,7 +36,7 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     next();
   });
   app.use('/api', express.json({ limit: '16kb' }));
-  if(!allowedModes.includes('live'))app.use('/api/live',(req,res)=>res.status(400).json({error:'此页面仅支持模拟交易'}));
+  for(const mode of ['paper','live'])if(!allowedModes.includes(mode))app.use('/api/'+mode,(req,res)=>res.status(400).json({error:mode==='live'?'此页面仅支持模拟交易':'此页面仅支持实盘交易'}));
   app.get('/api/health', (req, res) => {res.setHeader('Cache-Control','no-store');res.json({ ok: true, now: Date.now(),service });});
   app.post('/api/service/shutdown',(req,res)=>{
     if(!service.shutdownEnabled)return res.status(503).json({error:'当前服务未启用控制台停止功能'});
@@ -47,12 +44,8 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     res.json({ok:true,instanceId:service.instanceId,message:'正在停止服务'});
   });
   app.get('/api/state', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.json({ ...engine.snapshot(), controlToken: token }); });
-  app.get('/api/paper/report',(req,res,next)=>{
+  if(!allowedModes.includes('live'))app.get('/api/paper/report',(req,res,next)=>{
     try {res.setHeader('Cache-Control','no-store');res.json(paperReport(engine.store,{startDate:req.query.startDate,endDate:req.query.endDate}));}
-    catch(error){next(error);}
-  });
-  if(allowedModes.includes('live'))app.get('/momentum/api/paper/report',(req,res,next)=>{
-    try {res.setHeader('Cache-Control','no-store');res.json(paperReport(momentumReportStore,{startDate:req.query.startDate,endDate:req.query.endDate}));}
     catch(error){next(error);}
   });
   app.get('/api/history', async (req, res, next) => {
@@ -169,18 +162,15 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
 
 async function main() {
   const root = fileURLToPath(new URL('../', import.meta.url));
-  const store = new Store(resolve(root, 'data/trading.sqlite'));
-  const venue = new Polymarket();
-  const engine = new Engine(store, venue);
+  const store = new RangeStore(resolve(root, 'data/trading.sqlite'));
+  const venue = new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const rangeStore=new RangeStore(resolve(root,'data/range.sqlite'));
   rangeStore.seedFrom([store]);
   const rangeVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const rangeEngine=new RangeEngine(rangeStore,rangeVenue);
-  const engines=[engine,rangeEngine];
-  // Historical reports remain available without starting the removed simulator.
-  const momentumPath=resolve(root,'data/momentum.sqlite');
-  const momentumReportStore=existsSync(momentumPath)?{db:new DatabaseSync(momentumPath,{readOnly:true})}:null;
-  const app = createApp(engine,{onShutdown:close,rangeEngine,momentumReportStore});
+  const engine=new RangeLiveEngine(store,venue,rangeEngine);
+  const engines=[rangeEngine,engine];
+  const app = createApp(engine,{onShutdown:close,rangeEngine,allowedModes:['live']});
   const production = process.argv.includes('--production');
   let vite;
   if (production) {
@@ -213,7 +203,7 @@ async function main() {
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
     while (engines.some(current=>current.busy||current.entryBusy||current.spotTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
-    store.close();rangeStore.close();momentumReportStore?.db.close();process.exit(0);
+    store.close();rangeStore.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);
 }

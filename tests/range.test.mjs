@@ -7,6 +7,7 @@ import {tmpdir} from 'node:os';
 import {stableRange as evaluateRange,analyzeLevels,levelWindow,LEVEL_CANDLE_MS,rangeRegime,RANGE_DEFAULTS,validateRangeConfig} from '../server/range-strategy.mjs';
 import {RangeStore} from '../server/range-store.mjs';
 import {RangeEngine} from '../server/range-engine.mjs';
+import {RangeLiveEngine} from '../server/range-live-engine.mjs';
 import {Store} from '../server/store.mjs';
 import {Engine} from '../server/engine.mjs';
 import {createApp} from '../server/index.mjs';
@@ -73,7 +74,7 @@ test('new round bounds and current position replace old bounds without waiting f
   const next=evaluateRange([],config,end+300000,history,100.3);
   state=rangeRegime(state,next,vote,spot,1,end+300000);
   assert.equal(state.upper,100.5);assert.equal(state.levelWindowEnd,end+300000);assert.equal(state.phase,'range');assert.equal(state.direction,'DOWN');
-  const retained=rangeRegime(state,next,{...vote,direction:'UP',up:8,down:4},{price:100,windowSeconds:60},1,end+301000);
+  const retained=rangeRegime(state,next,{...vote,direction:'UP',up:8,down:4},{price:100.25,windowSeconds:60},1,end+301000);
   assert.equal(retained.direction,'DOWN');
 });
 
@@ -286,14 +287,121 @@ test('rolling updated bounds cannot move the frozen confirmation line; current p
 test('failed or missing closes cannot count as consecutive confirmations and corrections are rechecked',()=>{
   const state=decide(null,confirmationCandidate(),201);
   const missing=decide(state,confirmationCandidate({completedRounds:[{round:round+300,close:202,source:'official'}]}),201,end+600000);
-  assert.equal(missing.breakoutCount,0);assert.equal(missing.phase,'range');
+  assert.equal(missing.breakoutCount,1);assert.equal(missing.phase,'range');
   const one=decide(state,confirmationCandidate({completedRounds:closes([201])}),201,end+300000);
   const corrected=decide(one,confirmationCandidate({completedRounds:closes([199,201])}),201,end+600000);
-  assert.equal(corrected.breakoutCount,0);assert.equal(corrected.breakoutStartRound,round+600);
+  assert.equal(corrected.breakoutCount,1);assert.equal(corrected.breakoutStartRound,round);
   const equal=decide(state,confirmationCandidate({completedRounds:closes([200.1,201])}),201,end+600000);
-  assert.equal(equal.phase,'range');assert.equal(equal.breakoutCount,0);
+  assert.equal(equal.phase,'range');assert.equal(equal.breakoutCount,1);
   const invalid=decide(state,confirmationCandidate({completedRounds:[{round,invalid:true}]}),201,end+300000);
   assert.equal(invalid.breakoutCount,0);assert.equal(invalid.breakoutStartRound,round+300);
+});
+
+for(const side of ['UP','DOWN'])test(`${side} confirmation only uses the latest consecutive closes, including delayed backfills`,()=>{
+  const far=side==='UP'?201:99,inside=150,state=decide(null,confirmationCandidate(),far);
+  for(const prices of [[far,inside,far],[far,far,inside,far],[far,far,null,far],[far,far,inside]]){
+    const result=decide(state,confirmationCandidate({completedRounds:closes(prices)}),far,end+prices.length*300000);
+    assert.equal(result.phase,'range');assert.ok(result.breakoutCount<2);assert.equal(result.breakoutConfirmedAt,null);
+  }
+  const prices=[far,inside,far,far];
+  const result=decide(state,confirmationCandidate({completedRounds:closes(prices)}),far,end+prices.length*300000);
+  assert.equal(result.phase,side==='UP'?'breakout_up':'breakout_down');assert.equal(result.breakoutCount,2);
+  assert.equal(result.tradeFromRound,round+1200);assert.equal(result.breakoutLastRound,round+900);
+});
+
+function setupLive(t){
+  const source=setup(t),store=new RangeStore(':memory:'),submissions=[];
+  const venue={priceFeed:new EventEmitter(),readiness:()=>({enabled:true,configured:true,authenticated:true}),balance:async()=>10000,
+    buy:async(order,quote,guard)=>{assert.equal(guard(),true);submissions.push({order,quote});return {ok:true,orderId:'live-'+order.id,tradeIds:[]};}};
+  const engine=new RangeLiveEngine(store,venue,source.engine,{now:source.now});
+  engine.spot={...source.engine.spot};engine.market=structuredClone(source.engine.market);engine.books=structuredClone(source.engine.books);
+  t.after(()=>{engine.closing=true;store.close();});return {source,store,engine,venue,submissions};
+}
+
+test('both range pages produce a valid cold-start snapshot before official price data arrives',t=>{
+  const {source,engine}=setupLive(t);
+  source.engine.spot=null;source.engine.analysisCache=null;engine.spot=null;
+  assert.equal(source.engine.snapshot().entrySignal.code,'RANGE_OFFICIAL_PRICE_MISSING');
+  assert.equal(engine.snapshot().entrySignal.code,'RANGE_OFFICIAL_PRICE_MISSING');
+});
+
+test('live follows range signals while orders, logs, stakes and reservations remain independent',async t=>{
+  const {source,engine,store,submissions}=setupLive(t);
+  engine.configure('live',{...store.account('live').config,baseAmount:7});
+  await source.engine.start('paper');await source.engine.attempt('paper');
+  await engine.start('live');await Promise.all([engine.attempt('live'),engine.attempt('live')]);
+  assert.equal(submissions.length,1);
+  const real=store.orderForRound('live',round),paper=source.store.orderForRound('paper',round);
+  assert.equal(real.direction,paper.direction);assert.equal(real.budget,7);assert.equal(paper.budget,10);
+  assert.equal(real.status,'confirming');assert.equal(real.signalRule,'range_regime');assert.equal(real.rangeSignal.lower,paper.rangeSignal.lower);
+  assert.ok(submissions[0].quote.priceLimit<0.5);assert.equal(store.orderCount('paper'),0);assert.equal(source.store.orderCount('live'),0);
+  assert.ok(store.logs('live').some(row=>row.message.includes('订单已提交')));
+  assert.ok(!source.store.logs('paper').some(row=>row.message.includes('订单已提交')));
+  assert.equal(engine.snapshot().strategy,'range_breakout');assert.equal(engine.snapshot().strategySource,'range');
+  assert.deepEqual(engine.snapshot().rangeConfig,source.engine.snapshot().rangeConfig);
+  assert.equal(store.account('live').losses,0);assert.equal(source.store.account('paper').losses,0);
+});
+
+test('live takes market signals even with paper paused; wallet-time direction changes cancel entry',async t=>{
+  const {source,engine,store,venue,submissions}=setupLive(t);
+  assert.equal(source.store.account('paper').running,false);
+  await engine.start('live');
+  venue.balance=async()=>{source.engine.spot.price=100.19;return 10000;};
+  await engine.attempt('live');assert.equal(submissions.length,0);assert.equal(store.orderCount('live'),0);
+  assert.equal(engine.entryBlocks.live.code,'SIGNAL_CHANGED');
+  venue.balance=async()=>10000;await engine.attempt('live');
+  assert.equal(submissions.length,1);assert.equal(submissions[0].order.direction,'DOWN');
+  assert.equal(source.store.orderCount('paper'),0);
+});
+
+test('live martingale uses its own losing streak instead of the paper account sequence',async t=>{
+  const {source,engine,store,submissions}=setupLive(t);
+  store.saveAccount({...store.account('live'),losses:1,config:{...store.account('live').config,baseAmount:7}});
+  source.store.saveAccount({...source.store.account('paper'),losses:3});
+  await engine.start('live');await engine.attempt('live');
+  assert.equal(submissions[0].order.budget,14);assert.equal(submissions[0].order.doubling,1);
+  assert.equal(source.store.account('paper').losses,3);assert.equal(source.store.orderCount('paper'),0);
+});
+
+test('live gates wrong oracle markets, high prices, missing wallet configuration and late entries',async t=>{
+  const {source,engine,store,venue,submissions}=setupLive(t);
+  venue.readiness=()=>({enabled:false,configured:false});await assert.rejects(engine.start('live'),/未启用/);
+  assert.equal(store.account('live').running,false);
+  venue.readiness=()=>({enabled:true,configured:true});await engine.start('live');
+  engine.spot.windowSeconds=0;await engine.attempt('live');assert.equal(engine.entryBlocks.live.code,'RANGE_FOLLOW_MARKET_MISMATCH');
+  engine.spot.windowSeconds=60;engine.books.UP.asks[0].price=0.5;
+  await engine.attempt('live');assert.equal(engine.entryBlocks.live.code,'RANGE_PRICE_NOT_BELOW_HALF');
+  source.setNow(end+121000);await engine.attempt('live');assert.equal(engine.entryBlocks.live.code,'ENTRY_WINDOW_CLOSED');
+  assert.equal(submissions.length,0);assert.equal(store.account('live').running,true);
+});
+
+test('shared range settings follow paper, live capital settings stay separate and active live blocks shared edits',async t=>{
+  const {source,engine,store}=setupLive(t),paper=source.store.account('paper');
+  source.engine.configure('paper',{...paper.config,entryWindow:90,rangeConfig:{...config,breakoutRounds:3}});
+  assert.equal(engine.snapshot().accounts.live.config.entryWindow,90);assert.equal(engine.snapshot().rangeConfig.breakoutRounds,3);
+  engine.configure('live',{...store.account('live').config,baseAmount:6});assert.equal(source.store.account('paper').config.baseAmount,10);
+  assert.throws(()=>engine.configure('live',{...store.account('live').config,entryWindow:80}),/跟随/);
+  assert.throws(()=>engine.configure('live',{...store.account('live').config,rangeConfig:config}),/跟随/);
+  await engine.start('live');
+  assert.throws(()=>source.engine.configure('paper',{...source.store.account('paper').config,entryWindow:100}),/实盘正在运行/);
+  assert.equal(source.store.account('paper').config.entryWindow,90);
+  await assert.rejects(engine.start('paper'),/不支持/);
+});
+
+test('live and paper API history and control tokens remain isolated under shared strategy',async t=>{
+  const {source,engine,store}=setupLive(t);
+  store.log('live','info','live-only');source.store.log('paper','info','paper-only');
+  const server=createApp(engine,{rangeEngine:source.engine,allowedModes:['live']}).listen(0,'127.0.0.1');
+  await new Promise(resolve=>server.once('listening',resolve));t.after(()=>{server.closeAllConnections();server.close();});
+  const base='http://127.0.0.1:'+server.address().port,read=async path=>(await fetch(base+path)).json();
+  const live=await read('/api/state'),paper=await read('/range/api/state');
+  assert.equal(live.strategy,'range_breakout');assert.equal(paper.strategy,'range_breakout');assert.notEqual(live.controlToken,paper.controlToken);
+  assert.ok((await read('/api/live/logs')).items.some(row=>row.message==='live-only'));
+  assert.ok(!(await read('/range/api/paper/logs')).items.some(row=>row.message==='live-only'));
+  const post=(path,token)=>fetch(base+path,{method:'POST',headers:{Origin:base,'X-Control-Token':token}});
+  assert.equal((await post('/api/live/start',paper.controlToken)).status,403);
+  assert.equal((await post('/range/api/live/start',paper.controlToken)).status,400);
+  assert.equal((await post('/api/paper/start',live.controlToken)).status,400);
 });
 
 test('configured percent and round count are independent and reject malformed inputs',()=>{
