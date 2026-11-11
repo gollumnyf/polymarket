@@ -32,7 +32,7 @@ export class RangeStore extends Store {
       this.db.prepare('INSERT INTO range_control VALUES (1,?,NULL)').run(result.lastInsertRowid);
     });
     // Retain old order evidence, but never reuse five-second levels for new entries.
-    this.db.exec("UPDATE range_control SET regime_id=NULL WHERE regime_id IN (SELECT id FROM range_regimes WHERE level_timeframe_minutes!=15 OR level_lookback_hours!=4 OR actual_lower IS NULL OR actual_upper IS NULL OR support_source!='rolling_extremes')");
+    this.db.exec("UPDATE range_control SET regime_id=NULL WHERE regime_id IN (SELECT id FROM range_regimes WHERE level_timeframe_minutes!=5 OR actual_lower IS NULL OR actual_upper IS NULL OR support_source!='rolling_extremes')");
     this.rangeReady=true;
     this.insertTick=this.db.prepare('INSERT OR IGNORE INTO ticks(source,time,price,oracle_window) VALUES (?,?,?,?)');
     this.upsertBar=this.db.prepare(`INSERT INTO range_price_bars VALUES (?,?,?,?,?,?,?,?,0,1) ON CONFLICT(oracle_window,bucket) DO UPDATE SET

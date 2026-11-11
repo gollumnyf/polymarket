@@ -4,7 +4,7 @@ export const RANGE_BUCKET_MS=5000;
 // granular RTDS samples. Keep the range usable across that bounded gap, while
 // still rejecting longer outages.
 export const RANGE_MAX_GAP_MS=600000;
-export const LEVEL_CANDLE_MS=15*60000;
+export const LEVEL_CANDLE_MS=5*60000;
 export const LEVEL_LOOKBACK_HOURS=4;
 // The outer fifth of a confirmed range is treated as the boundary zone.  In
 // that zone the mean-reversion signal is opposite to the price movement.
@@ -44,18 +44,18 @@ export function analyzeLevels(bars,config,now){
     const parts=history.valid.filter(bar=>bar.bucket>=bucket&&bar.bucket<bucket+LEVEL_CANDLE_MS);
     if(!parts.length)continue;
     const quality=inspectBars(parts,bucket,bucket+LEVEL_CANDLE_MS);
-    candles.push({bucket,open:parts[0].open,high:Math.max(...parts.map(bar=>bar.high)),low:Math.min(...parts.map(bar=>bar.low)),close:parts.at(-1).close,
+    const open=parts[0].open,close=parts.at(-1).close;
+    candles.push({bucket,open,high:Math.max(open,close),low:Math.min(open,close),close,
       firstAt:parts[0].firstAt,lastAt:parts.at(-1).lastAt,maxGapMs:quality.maxGapMs,complete:quality.maxGapMs<=RANGE_MAX_GAP_MS,received:parts.length});
   }
-  const lower=candles.length?Math.min(...candles.map(bar=>bar.low)):null,upper=candles.length?Math.max(...candles.map(bar=>bar.high)):null;
-  const peaks=candles.slice(1,-1).filter((bar,i)=>bar.high>=candles[i].high&&bar.high>=candles[i+2].high).sort((a,b)=>b.high-a.high);
-  const valleys=candles.slice(1,-1).filter((bar,i)=>bar.low<=candles[i].low&&bar.low<=candles[i+2].low).sort((a,b)=>a.low-b.low);
-  const result={start,end,timeframeMinutes:15,lookbackHours:config.levelLookbackHours,expected:config.levelLookbackHours*4,received:candles.length,validCandles:candles.filter(bar=>bar.complete).length,
-    peak:peaks[0]?.high??null,secondaryPeak:peaks[1]?.high??null,valley:valleys[0]?.low??null,secondaryValley:valleys[1]?.low??null,
+  const bodyHighs=[...new Set(candles.map(bar=>bar.high))].sort((a,b)=>b-a),bodyLows=[...new Set(candles.map(bar=>bar.low))].sort((a,b)=>a-b);
+  const upper=bodyHighs[0]??null,lower=bodyLows[0]??null;
+  const result={start,end,timeframeMinutes:5,lookbackHours:config.levelLookbackHours,expected:config.levelLookbackHours*12,received:candles.length,validCandles:candles.filter(bar=>bar.complete).length,
+    peak:bodyHighs[0]??null,secondaryPeak:bodyHighs[1]??null,valley:bodyLows[0]??null,secondaryValley:bodyLows[1]??null,
     maxGapMs:history.maxGapMs,gapLimitMs:RANGE_MAX_GAP_MS,candles,lower,upper,actualLower:lower,actualUpper:upper,
     widthPercent:lower>0?(upper-lower)/((upper+lower)/2)*100:null,supportSource:'rolling_extremes',resistanceSource:'rolling_extremes',ready:false};
   if(history.invalid)return {...result,code:'RANGE_LEVEL_HISTORY_INVALID',message:`历史报价无效：${String(history.invalid.bucket)}`};
-  if(history.maxGapMs>RANGE_MAX_GAP_MS||result.validCandles!==16)return {...result,code:'RANGE_LEVEL_HISTORY_INCOMPLETE',message:`近 ${config.levelLookbackHours} 小时有效 15 分钟 K 线 ${result.validCandles}/${result.expected} 根，最长报价缺失 ${history.maxGapMs/1000} 秒，允许最多 600 秒；继续获取 Polymarket 历史数据`};
+  if(history.maxGapMs>RANGE_MAX_GAP_MS||result.validCandles!==result.expected)return {...result,code:'RANGE_LEVEL_HISTORY_INCOMPLETE',message:`近 ${config.levelLookbackHours} 小时有效 5 分钟 K 线 ${result.validCandles}/${result.expected} 根，最长报价缺失 ${history.maxGapMs/1000} 秒，允许最多 600 秒；继续获取 Polymarket 历史数据`};
   return {...result,ready:true,code:null,message:'历史上下界已就绪，每场结束重算；仅按当前价格是否越界判断区间状态'};
 }
 
@@ -63,6 +63,7 @@ export function validateRangeConfig(input={}){
   for(const key of Object.keys(input))if(!['lookbackHours','levelLookbackHours'].includes(key))throw Error(`不支持的区间参数：${key}`);
   const config={...RANGE_DEFAULTS,...input};
   if(!Number.isInteger(config.lookbackHours)||config.lookbackHours<1||config.lookbackHours>24)throw Error('方向统计小时数必须是 1 到 24 的整数');
+  if(!Number.isInteger(config.levelLookbackHours)||config.levelLookbackHours<1||config.levelLookbackHours>24)throw Error('历史区间小时数必须是 1 到 24 的整数');
   return config;
 }
 
@@ -82,7 +83,7 @@ export function classifyRange(candidate,price){
 
 export function stableRange(bars,config,now,levelHistory=bars,price=null){
   const levels=analyzeLevels(levelHistory,config,now);
-  const base={start:levels.start,end:levels.end,expected:config.levelLookbackHours*12*4,received:levels.candles.reduce((n,bar)=>n+bar.received,0),
+  const base={start:levels.start,end:levels.end,expected:config.levelLookbackHours*12,received:levels.candles.reduce((n,bar)=>n+bar.received,0),
     levelAnalysis:levels,lower:levels.lower,upper:levels.upper,actualLower:levels.lower,actualUpper:levels.upper,widthPercent:levels.widthPercent,
     maxGapMs:levels.maxGapMs,gapLimitMs:RANGE_MAX_GAP_MS,supportSource:'rolling_extremes',resistanceSource:'rolling_extremes',stable:false,breakoutReady:levels.ready,
     code:levels.code,message:levels.message,blockingReasons:levels.ready?[]:[{code:levels.code,message:levels.message}]};
@@ -94,7 +95,7 @@ export function rangeRegime(previous,candidate,vote,spot,configId,now){
   const prior=previous&&previous.configId===configId&&previous.oracleWindow===spot.windowSeconds&&previous.supportSource==='rolling_extremes'?previous:null;
   const direction=spot.price>candidate.upper?'UP':spot.price<candidate.lower?'DOWN':null,phase=direction==='UP'?'breakout_up':direction==='DOWN'?'breakout_down':'range';
   const changedWindow=!prior||prior.levelWindowEnd!==candidate.levelAnalysis.end;
-  let state={...prior,configId,oracleWindow:spot.windowSeconds,levelTimeframeMinutes:15,levelLookbackHours:config.levelLookbackHours,levelWindowStart:candidate.levelAnalysis.start,levelWindowEnd:candidate.levelAnalysis.end,
+  let state={...prior,configId,oracleWindow:spot.windowSeconds,levelTimeframeMinutes:candidate.levelAnalysis.timeframeMinutes,levelLookbackHours:candidate.levelAnalysis.lookbackHours,levelWindowStart:candidate.levelAnalysis.start,levelWindowEnd:candidate.levelAnalysis.end,
     lower:candidate.lower,upper:candidate.upper,actualLower:candidate.lower,actualUpper:candidate.upper,widthPercent:candidate.widthPercent,
     supportSource:'rolling_extremes',resistanceSource:'rolling_extremes',supportTouches:0,resistanceTouches:0,roundTrips:0,
     phase,formedAt:prior?.formedAt??now,changedAt:changedWindow?now:prior.changedAt,windowStart:candidate.start,windowEnd:candidate.end,
