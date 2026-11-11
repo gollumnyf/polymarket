@@ -259,6 +259,7 @@ function PriceChart({ ticks, reference, start, now, range,zone }) {
         <path d={path} fill="none" stroke="#61d9b0" strokeWidth="2.3" strokeLinejoin="round" strokeLinecap="round"/>
         <circle cx={x(last.time)} cy={y(last.price)} r="8" fill="#61d9b0" opacity=".12"/><circle cx={x(last.time)} cy={y(last.price)} r="3.5" fill="#61d9b0"/>
       </>}
+      {reference && <text x={right-8} y={y(reference)-7} textAnchor="end" className="chart-target-label"><title>本场起始价</title>target</text>}
       {Array.from({ length: timeLabels }, (_, i) => <text key={i} x={left + i * plotWidth / (timeLabels - 1)} y={height - 6} className="axis-label" textAnchor={i === 0 ? 'start' : i === timeLabels - 1 ? 'end' : 'middle'}>{time((xmin + (xmax - xmin) * i / (timeLabels - 1)) / 1000)}</text>)}
       {hover && hover.time >= xmin && hover.time <= xmax && <g>
         <line x1={x(hover.time)} x2={x(hover.time)} y1={top} y2={bottom} stroke="#88929f" strokeDasharray="3 4"/>

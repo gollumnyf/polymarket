@@ -203,7 +203,7 @@ async function main() {
     // Outstanding venue requests have a 10s deadline. Preserve reservations until
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
-    while (engines.some(current=>current.busy||current.entryBusy||current.spotTask||current.voteTask||current.settlementTask||current.roundPredictionTasks.size) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    while (engines.some(current=>current.busy||current.entryBusy||current.spotTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
     store.close();momentumStore.close();rangeStore.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);

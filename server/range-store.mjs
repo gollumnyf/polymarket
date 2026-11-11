@@ -3,7 +3,7 @@ import {DEFAULT_CONFIG} from './strategy.mjs';
 import {RANGE_DEFAULTS,RANGE_BUCKET_MS,validateRangeConfig} from './range-strategy.mjs';
 
 export const RANGE_TRADING_CONFIG=Object.freeze({...DEFAULT_CONFIG,entryDelay:0,entryWindow:120,maxPrice:0.5});
-const stateFields={configId:'config_id',oracleWindow:'oracle_window',phase:'phase',lower:'lower_price',upper:'upper_price',direction:'direction',upCount:'up_count',downCount:'down_count',expectedCount:'expected_count',supportTouches:'support_touches',resistanceTouches:'resistance_touches',widthPercent:'width_percent',roundTrips:'round_trips',windowStart:'window_start',windowEnd:'window_end',formedAt:'formed_at',breakoutSince:'breakout_since',changedAt:'changed_at',levelTimeframeMinutes:'level_timeframe_minutes',levelLookbackHours:'level_lookback_hours',levelWindowStart:'level_window_start',levelWindowEnd:'level_window_end',supportSource:'support_source',resistanceSource:'resistance_source',actualLower:'actual_lower',actualUpper:'actual_upper',lockedDirectionRule:'locked_direction_rule',lockedPreviousRound:'locked_previous_round',lockedPreviousDirection:'locked_previous_direction',lockedPreviousSource:'locked_previous_source',directionSelectedAt:'direction_selected_at',tradeFromRound:'trade_from_round',formedFrom:'formed_from'};
+const stateFields={breakoutReferenceLower:'breakout_reference_lower',breakoutReferenceUpper:'breakout_reference_upper',breakoutPendingDirection:'breakout_pending_direction',breakoutStartRound:'breakout_start_round',breakoutLastRound:'breakout_last_round',breakoutCount:'breakout_count',breakoutLastClose:'breakout_last_close',breakoutLastSource:'breakout_last_source',breakoutConfirmedAt:'breakout_confirmed_at',rangeBaseDirection:'range_base_direction',rangeBaseDirectionRule:'range_base_direction_rule',configId:'config_id',oracleWindow:'oracle_window',phase:'phase',lower:'lower_price',upper:'upper_price',direction:'direction',upCount:'up_count',downCount:'down_count',expectedCount:'expected_count',supportTouches:'support_touches',resistanceTouches:'resistance_touches',widthPercent:'width_percent',roundTrips:'round_trips',windowStart:'window_start',windowEnd:'window_end',formedAt:'formed_at',breakoutSince:'breakout_since',changedAt:'changed_at',levelTimeframeMinutes:'level_timeframe_minutes',levelLookbackHours:'level_lookback_hours',levelWindowStart:'level_window_start',levelWindowEnd:'level_window_end',supportSource:'support_source',resistanceSource:'resistance_source',actualLower:'actual_lower',actualUpper:'actual_upper',lockedDirectionRule:'locked_direction_rule',lockedPreviousRound:'locked_previous_round',lockedPreviousDirection:'locked_previous_direction',lockedPreviousSource:'locked_previous_source',directionSelectedAt:'direction_selected_at',tradeFromRound:'trade_from_round',formedFrom:'formed_from'};
 const sourcePriority={pending:0,polymarket_last_second:1,polymarket_crypto_price:2,polymarket_event_metadata:2,official:3,official_void:3};
 const decisionFields={directionRule:'direction_rule',decisionUpCount:'decision_up_count',decisionDownCount:'decision_down_count',tiePreviousRound:'tie_previous_round',tiePreviousDirection:'tie_previous_direction',tiePreviousSource:'tie_previous_source'};
 
@@ -18,10 +18,11 @@ export class RangeStore extends Store {
       CREATE TABLE IF NOT EXISTS range_control(id INTEGER PRIMARY KEY CHECK(id=1),config_id INTEGER NOT NULL REFERENCES range_configs(id),regime_id INTEGER REFERENCES range_regimes(id));
       CREATE TABLE IF NOT EXISTS range_price_bars(oracle_window INTEGER NOT NULL,bucket INTEGER NOT NULL,open REAL NOT NULL,high REAL NOT NULL,low REAL NOT NULL,close REAL NOT NULL,first_at INTEGER NOT NULL,last_at INTEGER NOT NULL,max_gap_ms INTEGER NOT NULL,samples INTEGER NOT NULL,PRIMARY KEY(oracle_window,bucket));
       CREATE TABLE IF NOT EXISTS range_votes(round INTEGER PRIMARY KEY,outcome TEXT CHECK(outcome IN ('UP','DOWN')),source TEXT NOT NULL,open_price REAL,close_price REAL,updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS range_market_prices(oracle_window INTEGER NOT NULL,round INTEGER NOT NULL,open_price REAL NOT NULL,close_price REAL NOT NULL,fetched_at INTEGER NOT NULL,PRIMARY KEY(oracle_window,round));
       CREATE TABLE IF NOT EXISTS range_order_signals(order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,regime_id INTEGER NOT NULL REFERENCES range_regimes(id),observed_at INTEGER NOT NULL,observed_price REAL NOT NULL);
       CREATE INDEX IF NOT EXISTS range_tick_window ON ticks(source,oracle_window,time);
     `);
-    for(const [table,columns] of Object.entries({range_configs:{level_lookback_hours:'INTEGER NOT NULL DEFAULT 4',min_level_touches:'INTEGER NOT NULL DEFAULT 2',level_tolerance_percent:'REAL NOT NULL DEFAULT 0.05'},range_regimes:{trade_from_round:'INTEGER',formed_from:'TEXT',actual_lower:'REAL',actual_upper:'REAL',locked_direction_rule:'TEXT',locked_previous_round:'INTEGER',locked_previous_direction:'TEXT',locked_previous_source:'TEXT',direction_selected_at:'INTEGER',support_source:"TEXT NOT NULL DEFAULT 'touches'",resistance_source:"TEXT NOT NULL DEFAULT 'touches'",level_timeframe_minutes:'INTEGER NOT NULL DEFAULT 0',level_lookback_hours:'INTEGER NOT NULL DEFAULT 0',level_window_start:'INTEGER',level_window_end:'INTEGER',support_touches:'INTEGER NOT NULL DEFAULT 0',resistance_touches:'INTEGER NOT NULL DEFAULT 0',width_percent:'REAL',round_trips:'INTEGER NOT NULL DEFAULT 0'}})){
+    for(const [table,columns] of Object.entries({range_configs:{breakout_percent:'REAL NOT NULL DEFAULT 0.1',breakout_rounds:'INTEGER NOT NULL DEFAULT 2',level_lookback_hours:'INTEGER NOT NULL DEFAULT 4',min_level_touches:'INTEGER NOT NULL DEFAULT 2',level_tolerance_percent:'REAL NOT NULL DEFAULT 0.05'},range_regimes:{breakout_reference_lower:'REAL',breakout_reference_upper:'REAL',breakout_pending_direction:'TEXT',breakout_start_round:'INTEGER',breakout_last_round:'INTEGER',breakout_count:'INTEGER',breakout_last_close:'REAL',breakout_last_source:'TEXT',breakout_confirmed_at:'INTEGER',range_base_direction:'TEXT',range_base_direction_rule:'TEXT',trade_from_round:'INTEGER',formed_from:'TEXT',actual_lower:'REAL',actual_upper:'REAL',locked_direction_rule:'TEXT',locked_previous_round:'INTEGER',locked_previous_direction:'TEXT',locked_previous_source:'TEXT',direction_selected_at:'INTEGER',support_source:"TEXT NOT NULL DEFAULT 'touches'",resistance_source:"TEXT NOT NULL DEFAULT 'touches'",level_timeframe_minutes:'INTEGER NOT NULL DEFAULT 0',level_lookback_hours:'INTEGER NOT NULL DEFAULT 0',level_window_start:'INTEGER',level_window_end:'INTEGER',support_touches:'INTEGER NOT NULL DEFAULT 0',resistance_touches:'INTEGER NOT NULL DEFAULT 0',width_percent:'REAL',round_trips:'INTEGER NOT NULL DEFAULT 0'}})){
       const names=new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(column=>column.name));
       for(const [name,type] of Object.entries(columns))if(!names.has(name))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
     }
@@ -33,6 +34,16 @@ export class RangeStore extends Store {
     });
     // Retain old order evidence, but never reuse five-second levels for new entries.
     this.db.exec("UPDATE range_control SET regime_id=NULL WHERE regime_id IN (SELECT id FROM range_regimes WHERE level_timeframe_minutes!=5 OR actual_lower IS NULL OR actual_upper IS NULL OR support_source!='rolling_extremes')");
+    // Recover only evidence that determines the original vote direction. Edge orders
+    // may have overridden direction, so derive their base from saved vote counts.
+    this.db.exec(`UPDATE range_regimes SET range_base_direction=CASE
+      WHEN locked_direction_rule IN ('range_majority','tie_reverse_previous') THEN direction
+      WHEN up_count>down_count THEN 'UP' WHEN down_count>up_count THEN 'DOWN'
+      WHEN locked_previous_direction='UP' THEN 'DOWN' WHEN locked_previous_direction='DOWN' THEN 'UP' END,
+      range_base_direction_rule=CASE WHEN up_count=down_count THEN 'tie_reverse_previous' ELSE 'range_majority' END
+      WHERE phase='range' AND range_base_direction IS NULL AND
+        (locked_direction_rule IN ('range_majority','tie_reverse_previous') OR
+         (locked_direction_rule='range_edge_reversion' AND up_count+down_count=expected_count));`);
     this.rangeReady=true;
     this.insertTick=this.db.prepare('INSERT OR IGNORE INTO ticks(source,time,price,oracle_window) VALUES (?,?,?,?)');
     this.upsertBar=this.db.prepare(`INSERT INTO range_price_bars VALUES (?,?,?,?,?,?,?,?,0,1) ON CONFLICT(oracle_window,bucket) DO UPDATE SET
@@ -43,11 +54,11 @@ export class RangeStore extends Store {
       first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at),samples=samples+1`);
   }
   freshAccount(mode,config=RANGE_TRADING_CONFIG){return super.freshAccount(mode,config);}
-  rangeConfig(){return {...this.db.prepare('SELECT c.id,c.lookback_hours AS lookbackHours,c.level_lookback_hours AS levelLookbackHours FROM range_configs c JOIN range_control s ON s.config_id=c.id WHERE s.id=1').get()};}
+  rangeConfig(){return {...this.db.prepare('SELECT c.id,c.lookback_hours AS lookbackHours,c.level_lookback_hours AS levelLookbackHours,c.breakout_percent AS breakoutPercent,c.breakout_rounds AS breakoutRounds FROM range_configs c JOIN range_control s ON s.config_id=c.id WHERE s.id=1').get()};}
   saveRangeConfig(input){
     const config=validateRangeConfig(input),previous=this.rangeConfig();
     if(Object.keys(config).every(key=>config[key]===previous[key]))return previous;
-    const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,level_lookback_hours,max_width_percent,min_round_trips,min_level_touches,level_tolerance_percent,created_at) VALUES (?,?,?,?,?,?,?)').run(config.lookbackHours,config.levelLookbackHours,1,0,0,0,Date.now());
+    const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,level_lookback_hours,max_width_percent,min_round_trips,min_level_touches,level_tolerance_percent,breakout_percent,breakout_rounds,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(config.lookbackHours,config.levelLookbackHours,1,0,0,0,config.breakoutPercent,config.breakoutRounds,Date.now());
     this.db.prepare('UPDATE range_control SET config_id=?,regime_id=NULL WHERE id=1').run(result.lastInsertRowid);
     return this.rangeConfig();
   }
@@ -72,20 +83,14 @@ export class RangeStore extends Store {
       if(result.changes)this.upsertBar.run(oracleWindow,Math.floor(time/RANGE_BUCKET_MS)*RANGE_BUCKET_MS,price,price,price,price,time,time);
     });
   }
-  // Polymarket's market endpoint exposes official round open/close prices but
-  // not the granular RTDS stream. Store those sparse official points so a
-  // bounded five-minute gap can be evaluated without inventing intermediate
-  // prices.
-  marketRound(round,open,close,oracleWindow){
-    if(!this.rangeReady||!Number.isFinite(oracleWindow)||!Number.isFinite(open)||!Number.isFinite(close))return;
-    this.transaction(()=>{
-      const start=round*1000,end=(round+300)*1000-1000;
-      const startBucket=Math.floor(start/RANGE_BUCKET_MS)*RANGE_BUCKET_MS;
-      const endBucket=Math.floor(end/RANGE_BUCKET_MS)*RANGE_BUCKET_MS;
-      this.upsertBar.run(oracleWindow,startBucket,open,open,open,open,start,start);
-      this.upsertBar.run(oracleWindow,endBucket,close,close,close,close,end,end);
-    });
+  // Endpoint prices are authoritative body endpoints, not synthetic RTDS ticks.
+  // Keep them independent from raw-bar rebuilding during seedFrom/restart.
+  marketRound(round,open,close,oracleWindow,fetchedAt=Date.now()){
+    if(!this.rangeReady||!Number.isFinite(oracleWindow)||!Number.isInteger(round)||round%300!==0||![open,close].every(value=>Number.isFinite(value)&&value>0))return;
+    this.db.prepare(`INSERT INTO range_market_prices VALUES (?,?,?,?,?) ON CONFLICT(oracle_window,round) DO UPDATE SET
+      open_price=excluded.open_price,close_price=excluded.close_price,fetched_at=excluded.fetched_at`).run(oracleWindow,round,open,close,fetchedAt);
   }
+  marketPrices(window,start,end){return this.db.prepare('SELECT round,open_price AS open,close_price AS close,fetched_at AS fetchedAt FROM range_market_prices WHERE oracle_window=? AND round>=? AND round<? ORDER BY round').all(window,start,end);}
   rangeBars(window,start,end){return this.db.prepare('SELECT bucket,open,high,low,close,first_at AS firstAt,last_at AS lastAt,max_gap_ms AS maxGapMs,samples FROM range_price_bars WHERE oracle_window=? AND bucket>=? AND bucket<? ORDER BY bucket').all(window,start,end);}
   vote(round){return this.db.prepare('SELECT round,outcome,source,open_price AS open,close_price AS close,updated_at AS updatedAt FROM range_votes WHERE round=?').get(round)||null;}
   saveVote(vote){
