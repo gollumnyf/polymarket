@@ -79,7 +79,7 @@ export class RangeStore extends Store {
   marketRound(round,open,close,oracleWindow){
     if(!this.rangeReady||!Number.isFinite(oracleWindow)||!Number.isFinite(open)||!Number.isFinite(close))return;
     this.transaction(()=>{
-      const start=round*1000,end=(round+300)*1000-1;
+      const start=round*1000,end=(round+300)*1000-1000;
       const startBucket=Math.floor(start/RANGE_BUCKET_MS)*RANGE_BUCKET_MS;
       const endBucket=Math.floor(end/RANGE_BUCKET_MS)*RANGE_BUCKET_MS;
       this.upsertBar.run(oracleWindow,startBucket,open,open,open,open,start,start);
