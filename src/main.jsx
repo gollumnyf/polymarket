@@ -29,7 +29,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [historyClearKey,setHistoryClearKey] = useState(0);
   const [toast, setToast] = useState(null);
-  const [modal, setModal] = useState(null);
+  const [modal, setModal] = useState(new URLSearchParams(location.search).get('settings') === '1' ? 'settings' : null);
   const [tab, setTab] = useState('orders');
   const [range, setRange] = useState('round');
   const [base, setBase] = useState('10');
@@ -124,7 +124,7 @@ function App() {
         <button className={mode === 'live' ? 'nav-item selected' : 'nav-item'} onClick={() => switchMode('live')}><Zap size={18}/><span>实盘交易</span>{live ? <span className="nav-tag">LIVE</span> : <span className="nav-status"/>}</button>
       </nav>
       <div className="nav-label second">工具与资源</div>
-      <button className="nav-item" onClick={() => setModal('settings')}><SlidersHorizontal size={18}/><span>策略设置</span></button>
+      <button className="nav-item" onClick={() => location.assign('/range?settings=1')}><SlidersHorizontal size={18}/><span>策略设置</span></button>
       <button className="nav-item" onClick={() => setModal('guide')}><BookOpen size={18}/><span>使用指南</span><ExternalLink size={13}/></button>
       <div className="sidebar-bottom"><div className="market-note"><span className="mini-label">BUILT FOR</span><div><span className="poly-logo">◩</span> Polymarket <ArrowUpRight size={15}/></div><p>把交易交给规则<br/>把决策留给自己。</p></div><button className="profile" onClick={() => setModal('connection')}><span className="avatar">P</span><span>本地交易账户<small>{live ? 'Live trading' : 'Paper trading'}</small></span><Settings2 size={16}/></button></div>
     </aside>
