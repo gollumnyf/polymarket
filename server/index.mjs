@@ -9,6 +9,7 @@ import { RoundHistory } from './history.mjs';
 import {MomentumEngine,MomentumStore} from './momentum.mjs';
 import {RangeEngine} from './range-engine.mjs';
 import {RangeStore} from './range-store.mjs';
+import {paperReport} from './reports.mjs';
 
 export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,momentumEngine=null,rangeEngine=null,allowedModes=['paper','live'] } = {}) {
   const app = express();
@@ -45,6 +46,10 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     res.json({ok:true,instanceId:service.instanceId,message:'正在停止服务'});
   });
   app.get('/api/state', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.json({ ...engine.snapshot(), controlToken: token }); });
+  app.get('/api/paper/report',(req,res,next)=>{
+    try {res.setHeader('Cache-Control','no-store');res.json(paperReport(engine.store,{startDate:req.query.startDate,endDate:req.query.endDate}));}
+    catch(error){next(error);}
+  });
   app.get('/api/history', async (req, res, next) => {
     try {
       const mode = req.query.mode || 'paper';

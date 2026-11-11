@@ -45,6 +45,7 @@ export class Store {
     try {
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
       this.migrate(path);
+      this.db.exec('CREATE INDEX IF NOT EXISTS orders_report_created ON orders(mode,created_at); CREATE INDEX IF NOT EXISTS orders_report_settled ON orders(mode,settled_at);');
       for (const mode of ['paper', 'live']) {
         const account = this.account(mode) || this.freshAccount(mode);
         this.saveAccount({ ...account, running: false, reason: '策略未启动' });

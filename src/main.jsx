@@ -7,6 +7,8 @@ import HistoricalRounds from './HistoricalRounds.jsx';
 import HistoryPanel from './HistoryPanel.jsx';
 import Settings from './StrategySettings.jsx';
 import RangeStatus,{RangeGuide} from './RangeStatus.jsx';
+import Sidebar from './Sidebar.jsx';
+import ReportsPage from './ReportsPage.jsx';
 import {entryModeLabel,oppositeDirection} from './entry-mode.mjs';
 
 const fmt = (n, digits = 2) => n == null || !Number.isFinite(Number(n)) ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -86,7 +88,7 @@ function App() {
     if (baseLocked) setEditingBase(false);
   }, [mode, account?.config.baseAmount, editingBase, baseLocked]);
 
-  function switchMode(next) { if(automaticMode||['momentum','range'].includes(next)){location.assign(`/${next}`);return;} history.pushState(null, '', `/${next}`); setMode(next); setEditingBase(false); }
+  function switchMode(next) { if(automaticMode||['momentum','range','reports'].includes(next)){location.assign(`/${next}`);return;} history.pushState(null, '', `/${next}`); setMode(next); setEditingBase(false); }
   async function action(path, body = {}) {
     if (busy) return false;
     setBusy(true);
@@ -114,21 +116,7 @@ function App() {
   }
 
   return <div className={`app ${live ? 'live-mode' : ''}`}>
-    <aside className="sidebar">
-      <a href="/paper" className="brand" onClick={e => { e.preventDefault(); switchMode('paper'); }}><span className="brand-icon"><Activity size={24}/></span>pulse<span className="brand-dot">.</span><span className="beta">TERMINAL</span></a>
-      <div className="workspace"><span className="workspace-icon"><Layers3 size={18}/></span><div>我的交易空间<small>Personal workspace</small></div><span className="workspace-check"><ShieldCheck size={15}/></span></div>
-      <div className="nav-label">交易工作台</div>
-      <nav>
-        <button className={mode === 'paper' && !automaticMode ? 'nav-item selected' : 'nav-item'} onClick={() => switchMode('paper')}><FlaskConical size={18}/><span>模拟交易</span><span className="nav-tag">PAPER</span></button>
-        <button className={momentum?'nav-item selected':'nav-item'} onClick={()=>switchMode('momentum')}><Activity size={18}/><span>官方同向模拟</span><span className="nav-tag">≤ 0.50</span></button>
-        <button className={rangeMode?'nav-item selected':'nav-item'} onClick={()=>switchMode('range')}><Layers3 size={18}/><span>区间突破模拟</span><span className="nav-tag">&lt; 0.50</span></button>
-        <button className={mode === 'live' ? 'nav-item selected' : 'nav-item'} onClick={() => switchMode('live')}><Zap size={18}/><span>实盘交易</span>{live ? <span className="nav-tag">LIVE</span> : <span className="nav-status"/>}</button>
-      </nav>
-      <div className="nav-label second">工具与资源</div>
-      <button className="nav-item" onClick={() => setModal('settings')}><SlidersHorizontal size={18}/><span>策略设置</span></button>
-      <button className="nav-item" onClick={() => setModal('guide')}><BookOpen size={18}/><span>使用指南</span><ExternalLink size={13}/></button>
-      <div className="sidebar-bottom"><div className="market-note"><span className="mini-label">BUILT FOR</span><div><span className="poly-logo">◩</span> Polymarket <ArrowUpRight size={15}/></div><p>把交易交给规则<br/>把决策留给自己。</p></div><button className="profile" onClick={() => setModal('connection')}><span className="avatar">P</span><span>本地交易账户<small>{live ? 'Live trading' : 'Paper trading'}</small></span><Settings2 size={16}/></button></div>
-    </aside>
+    <Sidebar active={rangeMode?'range':momentum?'momentum':mode} onNavigate={switchMode} onSettings={()=>setModal('settings')} onGuide={()=>setModal('guide')} onConnection={()=>setModal('connection')}/>
     <div className="main-shell">
       <header className="topbar"><div className="breadcrumb">交易工作台 <ChevronRight size={13}/><strong>{pageTitle || (live ? '实盘交易' : '模拟交易')}</strong></div><div className="top-actions"><span className={`connection ${freshSpot && freshMarket ? 'healthy' : ''}`}><i/>{freshSpot && freshMarket ? '市场数据已连接' : !connected ? '正在连接本地服务' : '等待市场数据'}</span><span className="top-divider"/><button className="icon-button" aria-label="使用帮助" onClick={() => setModal('guide')}><CircleHelp size={18}/></button><button className="icon-button notification" aria-label="查看运行日志" onClick={() => { setTab('logs'); document.querySelector('#history')?.scrollIntoView({ behavior: 'smooth' }); }}><Bell size={18}/>{Object.keys(state?.errors || {}).length > 0 && <i/>}</button></div></header>
       <main>
@@ -282,4 +270,4 @@ function Reconcile({ order, busy, onSave }) {
   return <form onSubmit={e => { e.preventDefault(); onSave(id); }}><p className="modal-copy">请先到 Polymarket 核对这一场的真实订单，再粘贴完整订单 ID。系统只会读取该订单的官方成交记录，不会重发买单。</p><label className="reconcile-label">平台订单 ID<input value={id} onChange={e => setId(e.target.value)} required placeholder="0x…" pattern="0x[0-9a-fA-F]{64}"/></label><button className="button primary" disabled={busy}><RefreshCw size={16}/>保存并核对成交</button></form>;
 }
 
-createRoot(document.getElementById('root')).render(<App/>);
+createRoot(document.getElementById('root')).render(location.pathname.startsWith('/reports')?<ReportsPage/>:<App/>);
