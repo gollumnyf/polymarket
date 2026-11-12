@@ -30,7 +30,7 @@ export class Engine extends EventEmitter {
     const accounts = {};
     for (const mode of ['paper', 'live']) {
       const account = this.store.account(mode);
-      const pending=this.store.pending(mode), projected=projectedAccount(account,pending);
+      const pending=this.store.pending(mode), projected=this.projectAccount(account,pending);
       accounts[mode] = { ...account, nextAmount: nextAmount(projected), status: this.status[mode],
         projectedLosses:projected.losses,projectedCycle:projected.cycle,projectedCount:projected.projectedCount,
         entryBlock: this.entryBlocks[mode] || null, activeOrders: pending,
@@ -122,6 +122,9 @@ export class Engine extends EventEmitter {
     this.store.saveAccount({ ...account, running: false, reason });
     this.status[mode] = reason; this.log(mode, 'warning', reason);
   }
+  projectAccount(account,pending){return projectedAccount(account,pending);}
+  accountAfterSettlement(account,pnl,won,order){return afterSettlement(account,pnl,won);}
+  isPreviousStakeCycle(order,account){return false;}
   normalizeStakeCycle(mode) {
     const account=this.store.account(mode), normalized=resetAtAmountLimit(account);
     if(normalized!==account){
@@ -142,7 +145,7 @@ export class Engine extends EventEmitter {
     }
     // Read state again after async authentication, so a settlement cannot be overwritten.
     account = this.store.account(mode);
-    const reason = riskReason(projectedAccount(account,this.store.pending(mode)), available);
+    const reason = riskReason(this.projectAccount(account,this.store.pending(mode)), available);
     this.store.saveAccount({ ...account, running: true, reason: null });
     this.status[mode] = '等待入场信号'; this.log(mode, 'info', '策略启动；每场只买入一次；错误不自动暂停');
     const uncertain=this.store.pending(mode).find(order=>['uncertain','placing','confirming'].includes(order.status));
@@ -168,7 +171,7 @@ export class Engine extends EventEmitter {
   blockEntry(mode,round,message,details={},book=null) {
     const account=this.store.account(mode),at=this.now(),elapsed=(at-round*1000)/1000;
     const direction=details.direction??this.entryDirection(account,round)??null;
-    const budget=nextAmount(projectedAccount(account,this.store.pending(mode)));
+    const budget=nextAmount(this.projectAccount(account,this.store.pending(mode)));
     const code=details.code||'ENTRY_BLOCKED';
     const fullMessage=`场次 #${round}，开盘后 ${elapsed.toFixed(3)} 秒${direction?`，准备买入 ${direction}`:''}：${message}`;
     const diagnostic=this.store.saveEntryDiagnostic({configId:account.configId,budget,elapsed,entryDelay:account.config.entryDelay,entryWindow:account.config.entryWindow,
@@ -216,7 +219,7 @@ export class Engine extends EventEmitter {
     if(unconfirmed){this.blockEntry(mode,start,`订单成交结果待确认：场次 #${unconfirmed.round}，订单 ${unconfirmed.id}，状态 ${unconfirmed.status}；确认前禁止新增买入`,{code:'ORDER_UNCONFIRMED',relatedRound:unconfirmed.round});return;}
     const holding=pending.find(o=>o.end*1000>this.now());
     if(holding){this.blockEntry(mode,start,`本场持仓中：场次 #${holding.round} 的订单尚未结束，距离结束 ${(holding.end-this.now()/1000).toFixed(3)} 秒`,{code:'POSITION_NOT_ENDED',relatedRound:holding.round});return;}
-    const missing=pending.find(o=>!o.prediction);
+    const missing=pending.find(o=>!o.prediction&&!this.isPreviousStakeCycle(o,account));
     if(missing){this.blockEntry(mode,start,`等待上一场起止价预测：${this.predictionWaitReason(missing.round,missing)}`,{code:'ORDER_PREDICTION_MISSING',relatedRound:missing.round});return;}
     const follow=account.config.followPreviousAtOpen;
     if(!follow){
@@ -257,7 +260,7 @@ export class Engine extends EventEmitter {
     const updatedAlignment=this.alignmentReason(account,start,updatedDirection);
     if (updatedAlignment) {this.blockEntry(mode,start,updatedAlignment,{code:'SAME_DIRECTION_FILTER'});return;}
     if (updatedDirection !== direction) {this.blockEntry(mode,start,`入场信号已改变：钱包检查前 ${direction}，检查后 ${updatedDirection??'无有效方向'}，取消本次买入`,{code:'SIGNAL_CHANGED',direction:updatedDirection},book);return;}
-    const tradeAccount=projectedAccount(account,this.store.pending(mode));
+    const tradeAccount=this.projectAccount(account,this.store.pending(mode));
     const reason = riskReason(tradeAccount, available);
     if (reason) { this.blockEntry(mode,start,reason,{code:'RISK_LIMIT',availableBalance:available},book);return; }
     let quote;
@@ -329,9 +332,9 @@ export class Engine extends EventEmitter {
   applyOrderPrediction(order,prices){
     if(order?.status!=='open'||order.prediction||this.now()<order.end*1000)return;
     const prediction=predictionFromPrices(order,prices,this.now());if(!prediction)return;
-    const before=projectedAccount(this.store.account(order.mode),this.store.pending(order.mode)).amountLimitResets;
+    const before=this.projectAccount(this.store.account(order.mode),this.store.pending(order.mode)).amountLimitResets;
     this.store.savePrediction(prediction);
-    const after=projectedAccount(this.store.account(order.mode),this.store.pending(order.mode)).amountLimitResets;
+    const after=this.projectAccount(this.store.account(order.mode),this.store.pending(order.mode)).amountLimitResets;
     this.log(order.mode,'info',`场次 #${order.round} 预计${prediction.won?'获胜':'失利'}：起始 ${prediction.open} → ${prediction.source==='polymarket_last_second'?'同源末秒价':'平台终止价'} ${prediction.close}；资金序列按预计结果继续`);
     if(after>before)this.log(order.mode,'info',`预计下一笔超过单笔上限，恢复首笔 ${this.store.account(order.mode).config.baseAmount.toFixed(2)} 开始新轮`);
   }
@@ -424,8 +427,8 @@ export class Engine extends EventEmitter {
             account = { ...account, pnl: money(account.pnl + pnl) };
           } else {
             const previous=account;
-            account = afterSettlement(account, pnl, won);
-            if(!won && account.losses===0 && previous.losses>=0 && !order.prediction)
+            account = this.accountAfterSettlement(account, pnl, won, order);
+            if(!won && account.losses===0 && previous.losses>=0 && !order.prediction&&!this.isPreviousStakeCycle(order,previous))
               this.log(order.mode,'info',`下一笔超过单笔上限，恢复首笔 ${account.config.baseAmount.toFixed(2)} 开始新轮`);
           }
           if (order.prediction) this.store.verifyPrediction(order.id,!mismatch,this.now());

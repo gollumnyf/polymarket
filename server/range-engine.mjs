@@ -1,8 +1,9 @@
 import {MomentumEngine} from './momentum.mjs';
 import {normalizeHistoricalRound} from './history.mjs';
-import {roundStart,simulateFill,validateConfig} from './strategy.mjs';
+import {roundStart,simulateFill,validateConfig,money} from './strategy.mjs';
+import {projectedAccount} from './predictions.mjs';
 import {safeError} from './polymarket.mjs';
-import {stableRange,classifyRange,rangeRegime,RANGE_BUCKET_MS,RANGE_EDGE_FRACTION,levelWindow,validateRangeConfig} from './range-strategy.mjs';
+import {stableRange,classifyRange,rangeRegime,RANGE_BUCKET_MS,rangeBoundary,levelWindow,validateRangeConfig} from './range-strategy.mjs';
 
 export class RangeEngine extends MomentumEngine {
   constructor(store,venue,options={}){
@@ -12,7 +13,7 @@ export class RangeEngine extends MomentumEngine {
   backfillMarketHistory(){
     if(this.closing||!this.venue.fetch||!Number.isFinite(this.spot?.windowSeconds))return this.backfillTask;
     const config=this.store.rangeConfig(),window=this.spot.windowSeconds,end=roundStart(this.now());
-    const state=this.store.rangeState(),start=Math.min(end-Math.max(config.levelLookbackHours,config.lookbackHours)*3600,state?.breakoutPendingDirection&&!state.breakoutConfirmedAt?state.breakoutStartRound??end:end);
+    const state=this.store.rangeState(),start=Math.min(levelWindow(this.now(),config.levelLookbackHours,config.levelLagMinutes).start/1000,end-config.lookbackHours*3600,state?.breakoutPendingDirection&&!state.breakoutConfirmedAt?state.breakoutStartRound??end:end);
     const known=new Set(this.store.marketPrices(window,start,end).map(item=>item.round));
     for(let round=end-300;round>=start;round-=300){
       const key=window+':'+round;
@@ -97,13 +98,26 @@ export class RangeEngine extends MomentumEngine {
     // forecast or official correction is used even within the same five seconds.
     if(this.analysisCache?.key===key)return {...this.analysisCache,candidate:classifyRange(this.analysisCache.candidate,this.spot?.price),vote:this.voteSummary(config,window)};
     const start=end-config.lookbackHours*3600000;
-    const levelStart=levelWindow(this.now(),config.levelLookbackHours).start;
+    const {start:levelStart,end:levelEnd}=levelWindow(this.now(),config.levelLookbackHours,config.levelLagMinutes);
     const history=Number.isFinite(window)?this.store.rangeBars(window,Math.min(start,levelStart),end):[];
     const bars=history.filter(bar=>bar.bucket>=start);
-    const official=Number.isFinite(window)?this.store.marketPrices(window,Math.floor(levelStart/1000),roundStart(this.now())):[];
+    const official=Number.isFinite(window)?this.store.marketPrices(window,Math.floor(levelStart/1000),Math.floor(levelEnd/1000)):[];
     const candidate=stableRange(bars,config,this.now(),history,this.spot?.price,official),vote=this.voteSummary(config,window);
     this.analysisCache={key,config,candidate,vote};return this.analysisCache;
   }
+  // Honor historical stake resets only; the retired protection never triggers new resets.
+  projectAccount(account,pending){
+    const cursor=this.store.protectionAccount(account.mode);
+    if(cursor?.session!==account.session||cursor.resetRound==null)return super.projectAccount(account,pending);
+    const result=projectedAccount(account,pending.filter(order=>order.round>=cursor.resetRound));
+    return {...result,riskPnl:money(account.pnl-pending.reduce((sum,order)=>sum+(order.cost??order.budget??0),0))};
+  }
+  accountAfterSettlement(account,pnl,won,order){
+    const result=super.accountAfterSettlement(account,pnl,won,order);
+    return this.isPreviousStakeCycle(order,account)?
+      {...result,losses:account.losses,cycle:account.cycle,cyclePnl:account.cyclePnl}:result;
+  }
+  isPreviousStakeCycle(order,account){const cursor=this.store.protectionAccount(order.mode);return cursor?.session===account.session&&cursor.resetRound!=null&&order.round<cursor.resetRound;}
   signal(){
     const previous=this.store.rangeState();
     const reject=(code,message)=>({direction:null,code,message,state:previous});
@@ -138,33 +152,21 @@ export class RangeEngine extends MomentumEngine {
     let state=rangeRegime(previous,candidate,vote,spot,config.id,now);
     if(!state)return {...reject(candidate.code||'RANGE_NOT_STABLE',candidate.message),candidate,vote};
     state=this.store.saveRangeState(state);
+    const boundary=rangeBoundary(state,spot.price);
+    if(boundary.paused)return {direction:null,code:boundary.code,message:boundary.message,state,candidate,vote,usingSavedRange,boundary};
     if(!state.direction&&vote.complete&&vote.up===vote.down)return {direction:null,code:'RANGE_TIE_PREVIOUS_UNAVAILABLE',
       message:`区间初次选向同票（UP ${vote.up} / DOWN ${vote.down}），上一场 #${vote.previousRound} ${vote.previousSource==='official_void'?'官方判定作废，没有涨跌方向':'尚无有效官方结果和预测方向'}，继续等待`,state,candidate,vote};
     if(!state.direction)return {direction:null,code:'RANGE_VOTE_INCOMPLETE',message:
       `已形成稳定区间；近 ${config.lookbackHours} 小时仅取得 ${vote.covered}/${vote.expected} 场方向，继续补齐`,state,candidate,vote};
-    const edgeMessage=()=>{
-      const support=state.direction==='UP',lower=state.breakoutReferenceLower??state.lower,upper=state.breakoutReferenceUpper??state.upper,width=upper-lower;
-      const boundary=support?lower:upper,near=support?lower+width*RANGE_EDGE_FRACTION:upper-width*RANGE_EDGE_FRACTION;
-      const name=support?'下支撑位':'上压力位',cross=support?'跌破':'上穿',outside=support?spot.price<lower:spot.price>upper;
-      const base=state.rangeBaseDirection?`回到区间中部后恢复基础方向 ${state.rangeBaseDirection}`:'回到区间中部后按场次统计选向';
-      if(!outside)return `已贴近${name}，当前信号买 ${state.direction}：当前价 ${spot.price.toFixed(2)} ${support?'≤':'≥'} 贴近阈值 ${near.toFixed(2)}（区间${support?'下':'上'}侧 ${RANGE_EDGE_FRACTION*100}%）；${name} ${boundary.toFixed(2)}，尚未${cross}。${base}`;
-      const line=support?lower-width*config.breakoutPercent/100:upper+width*config.breakoutPercent/100;
-      const enough=support?spot.price<line:spot.price>line;
-      const pending=state.breakoutPendingDirection;
-      const reason=!enough?`距离尚未严格超过突破线 ${line.toFixed(2)}（区间宽度的 ${config.breakoutPercent}%）`:
-        pending=== (support?'DOWN':'UP')?`已越过突破线 ${line.toFixed(2)}，连续收盘确认 ${state.breakoutCount??0}/${config.breakoutRounds} 场`:
-        `已越过突破线 ${line.toFixed(2)}，本方向尚未累计收盘确认${pending?`；仍在核对先前 ${pending==='UP'?'上穿':'下破'}的收盘数据`:''}`;
-      return `已${cross}${name} ${boundary.toFixed(2)}，当前价 ${spot.price.toFixed(2)}；${reason}，突破尚未确认。当前仍按${support?'支撑位':'压力位'}反向买 ${state.direction}`;
-    };
     const previousResultText=vote.previousDirection?
       `当前上一场 #${vote.previousRound}：${vote.previousDirection}（${vote.previousSource==='official'?'官方最终结果':'未结算，场次预计结果'}）`:
       `当前上一场 #${vote.previousRound}：${vote.previousSource==='official_void'?'官方作废，无涨跌方向':'正在获取场次预计结果'}`;
     const message=state.phase==='range'?
-      (state.lockedDirectionRule==='range_edge_reversion'?edgeMessage():
+      (state.lockedDirectionRule==='boundary_return'?`已从${state.boundaryResumeSide==='lower'?'下支撑侧向上':'上压力侧向下'}返回中间区域，锁定买 ${state.direction}；恢复时价格 ${state.boundaryResumePrice.toFixed(2)} ${state.boundaryResumeSide==='lower'?'>':'<'} 中部${state.boundaryResumeSide==='lower'?'下':'上'}沿 ${state.boundaryResumeThreshold.toFixed(2)}。中部持续沿用此方向，再次触及边界后重新按返回侧选向；马丁资金序列保留`:
       state.lockedDirectionRule==='tie_reverse_previous'?`区间基础方向 ${state.direction}；首次选向时 UP ${state.upCount} / DOWN ${state.downCount} 同票，采用当时上一场 #${state.lockedPreviousRound} ${state.lockedPreviousDirection}（${state.lockedPreviousSource==='official'?'官方最终结果':'场次预计结果'}）的反方向。${previousResultText}；区间内继续沿用已锁定方向`:
       `价格位于历史区间，已锁定 ${state.direction}，选向时 UP ${state.upCount} / DOWN ${state.downCount}；每场开盘沿用。当前上界 ${state.actualUpper.toFixed(2)} / 下界 ${state.actualLower.toFixed(2)}，每场结束重算`):
       `已连续 ${state.breakoutCount} 场收盘${state.direction==='UP'?'上穿压力':'下破支撑'}并超过参考区间宽度的 ${config.breakoutPercent}%，突破确认买 ${state.direction}；从场次 #${state.tradeFromRound} 起执行，回到参考区间内重新按区间规则选向`;
-    return {direction:state.direction,code:null,message:usingSavedRange?`历史起止价正在补齐，暂沿用已保存区间 ${state.lower.toFixed(2)}–${state.upper.toFixed(2)}；${message}`:message,state,candidate,vote,usingSavedRange,directionRule:state.lockedDirectionRule};
+    return {direction:state.direction,code:null,message:usingSavedRange?`历史起止价正在补齐，暂沿用已保存区间 ${state.lower.toFixed(2)}–${state.upper.toFixed(2)}；${message}`:message,state,candidate,vote,usingSavedRange,boundary,directionRule:state.lockedDirectionRule};
   }
 
   snapshot(){

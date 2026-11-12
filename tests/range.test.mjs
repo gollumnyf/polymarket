@@ -4,7 +4,7 @@ import {EventEmitter} from 'node:events';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {stableRange as evaluateRange,analyzeLevels,levelWindow,LEVEL_CANDLE_MS,rangeRegime,RANGE_DEFAULTS,validateRangeConfig} from '../server/range-strategy.mjs';
+import {stableRange as evaluateRange,analyzeLevels,levelWindow,LEVEL_CANDLE_MS,rangeRegime,rangeBoundary,RANGE_DEFAULTS,validateRangeConfig} from '../server/range-strategy.mjs';
 import {RangeStore} from '../server/range-store.mjs';
 import {RangeEngine} from '../server/range-engine.mjs';
 import {RangeLiveEngine} from '../server/range-live-engine.mjs';
@@ -13,12 +13,12 @@ import {Engine} from '../server/engine.mjs';
 import {createApp} from '../server/index.mjs';
 import {apiPath} from '../src/api.mjs';
 
-const round=1800000000,end=round*1000,config={...RANGE_DEFAULTS,lookbackHours:1};
+const round=1800000000,end=round*1000,config={...RANGE_DEFAULTS,lookbackHours:1,levelLagMinutes:0};
 function waveBars(until=end){return Array.from({length:720},(_,i)=>{
   const price=100+0.2*Math.sin(i*Math.PI/60),bucket=until-3600000+i*5000;
   return {bucket,open:price,close:price,low:price,high:price,firstAt:bucket,lastAt:bucket+4000,maxGapMs:1000,samples:5};
 });}
-function levelBars(until=end){const {start}=levelWindow(until);return Array.from({length:2880},(_,i)=>{
+function levelBars(until=end){const {start}=levelWindow(until,4,0);return Array.from({length:2880},(_,i)=>{
   const bucket=start+i*5000,candle=Math.floor(i/180),price=100;
   return {bucket,open:price,close:price,low:i%180===90?(candle%4===2?99.8:99.9):price,
     high:i%180===90?(candle%4===1?100.2:100.1):price,firstAt:bucket,lastAt:bucket+4000,maxGapMs:1000,samples:5};
@@ -32,6 +32,54 @@ test('every five-minute close recomputes forty-eight rolling five-minute candles
   assert.equal(next.start,first.start+300000);assert.equal(next.end,first.end+300000);assert.equal(next.end-next.start,4*3600000);
   assert.equal(next.candles[0].bucket,next.start);assert.equal(next.candles[1].bucket,next.start+300000);
   assert.deepEqual(analyzeLevels(levelBars(),config,end+299999),first);
+});
+
+test('lagged level window excludes the latest three candles while keeping a full four-hour sample',()=>{
+  const shifted={...config,levelLagMinutes:15},window=levelWindow(end,4,15);
+  assert.deepEqual(levelWindow(end),window);assert.equal(window.end,end-900000);assert.equal(window.start,end-15300000);
+  const official=Array.from({length:51},(_,i)=>({round:window.start/1000+i*300,open:i<48?100:1,close:i<48?101:999}));
+  const levels=analyzeLevels([],shifted,end,official);
+  assert.equal(levels.ready,true);assert.equal(levels.candles.length,48);assert.equal(levels.lower,100);assert.equal(levels.upper,101);
+  assert.equal(levels.candles.at(-1).bucket,end-1200000);assert.equal(levels.nextUpdateAt,end+300000);
+  assert.deepEqual(analyzeLevels([],shifted,end+299999,official),levels);
+  const next=analyzeLevels([],shifted,end+300000,official);assert.equal(next.upper,999);assert.equal(next.lower,1);
+  assert.equal(next.start,window.start+300000);assert.equal(next.end,window.end+300000);
+  const raw=[...levelBars(end-900000),...levelBars().filter(bar=>bar.bucket>=end-900000).map(bar=>({...bar,open:999,close:999,high:999,low:999}))];
+  assert.equal(analyzeLevels(raw,shifted,end).upper,100);
+  assert.equal(analyzeLevels(raw,{...shifted,levelLagMinutes:0},end).upper,999);
+});
+
+test('lag configuration validates candle alignment and zero restores the original time window',()=>{
+  assert.equal(validateRangeConfig().levelLagMinutes,15);
+  for(const value of [-5,1,7,15.5,1445,'15',NaN])assert.throws(()=>validateRangeConfig({levelLagMinutes:value}),/滞后/);
+  for(const value of [0,5,15,60,1440])assert.equal(validateRangeConfig({levelLagMinutes:value}).levelLagMinutes,value);
+  assert.deepEqual(levelWindow(end,4,0),{start:end-14400000,end});
+});
+
+test('lagged analysis backfills older missing rounds while votes still use recent markets',async t=>{
+  const c=setup(t,{bars:false});c.store.saveRangeConfig({...config,levelLagMinutes:15});
+  const window=levelWindow(c.now(),4,15),requests=[];
+  for(let value=window.start/1000+300;value<round;value+=300)c.store.marketRound(value,100,101,60,end);
+  c.venue.fetch=async url=>{const params=new URL(url).searchParams,market=Date.parse(params.get('eventStartTime'))/1000;requests.push(market);return {ok:true,json:async()=>({openPrice:99,closePrice:100})};};
+  await c.engine.backfillMarketHistory();const analysis=c.engine.analysis();
+  assert.deepEqual(requests,[window.start/1000]);assert.equal(analysis.candidate.levelAnalysis.ready,true);
+  assert.equal(analysis.candidate.levelAnalysis.start,window.start);assert.equal(analysis.candidate.levelAnalysis.end,window.end);
+  assert.equal(analysis.vote.previousRound,round-300);assert.equal(analysis.vote.expected,12);
+});
+
+test('legacy config migration enables 15 minute lag without rewriting archived order evidence; saved zero survives restart',t=>{
+  const folder=mkdtempSync(join(tmpdir(),'level-lag-')),path=join(folder,'range.sqlite');let store=new RangeStore(path);
+  t.after(()=>{store.close();rmSync(folder,{recursive:true,force:true});});
+  store.saveRangeConfig(config);const oldConfig=store.rangeConfig().id;
+  const state=store.saveRangeState(decide(null,confirmationCandidate(),150,end,majority,oldConfig));
+  store.reserveOrder({id:'pre-lag-order',mode:'paper',session:store.account('paper').session,round,status:'won',direction:'UP',signalRule:'range_regime',rangeSignal:{...state,priceAt:end,price:150}});
+  store.db.exec('ALTER TABLE range_configs DROP COLUMN level_lag_minutes; ALTER TABLE range_regimes DROP COLUMN level_lag_minutes');
+  store.close();store=new RangeStore(path);
+  assert.equal(store.rangeConfig().levelLagMinutes,15);assert.notEqual(store.rangeConfig().id,oldConfig);assert.equal(store.rangeState(),null);
+  assert.equal(store.db.prepare('SELECT level_lag_minutes FROM range_configs WHERE id=?').get(oldConfig).level_lag_minutes,0);
+  assert.equal(store.order('pre-lag-order').rangeSignal.levelLagMinutes,0);
+  const {id,...current}=store.rangeConfig();store.saveRangeConfig({...current,levelLagMinutes:0});store.close();store=new RangeStore(path);
+  assert.equal(store.rangeConfig().levelLagMinutes,0);assert.equal(store.orderCount('paper'),1);
 });
 
 test('a single extreme defines each boundary without touches, oscillation or width gates',()=>{
@@ -60,7 +108,7 @@ test('range and breakout parameters validate independently of obsolete threshold
 
 test('fresh live price reclassifies a cached range immediately and detects continuing breakouts',t=>{
   const {engine,store}=setup(t,{up:5});assert.equal(engine.signal().direction,'DOWN');
-  engine.spot.price=100.3;assert.equal(engine.signal().direction,'DOWN');assert.equal(engine.analysis().candidate.stable,false);
+  engine.spot.price=100.3;assert.equal(engine.signal().code,'RANGE_BOUNDARY_WAIT');assert.equal(engine.analysis().candidate.stable,false);
   const started=store.rangeState().breakoutSince;
   engine.spot.price=100.4;assert.equal(engine.signal().state.breakoutSince,started);
   engine.spot.price=100;const back=engine.signal();assert.equal(back.state.phase,'range');assert.equal(back.direction,'DOWN');
@@ -88,27 +136,25 @@ test('rolling bounds and locked vote evidence survive restart',t=>{
   assert.equal(store.order('rolling-evidence').rangeSignal.supportSource,'rolling_extremes');assert.equal(store.order('rolling-evidence').rangeSignal.tiePreviousRound,round-300);
 });
 
-test('unconfirmed downside buys UP; two completed closes switch the next round to DOWN once',async t=>{
+test('unconfirmed and confirmed downside both wait at the boundary without placing orders',async t=>{
   const {engine,store,setNow,fresh}=setup(t,{votes:false});engine.spot.price=99.7;
   await engine.start('paper');await engine.attempt('paper');
-  assert.equal(store.orderForRound('paper',round).direction,'UP');
+  assert.equal(store.orderCount('paper'),0);
   for(let i=1;i<=2;i++){
     store.saveRoundPrediction({round:round+(i-1)*300,conditionId:'c',open:100,close:99.7,outcome:'DOWN',source:'polymarket_last_second',oracleWindow:60,observedAt:end+i*300000,priceAt:end+i*300000-1000});
-    if(i===1)store.savePrediction({orderId:store.orderForRound('paper',round).id,open:100,close:99.7,outcome:'DOWN',won:false,source:'polymarket_last_second',observedAt:end+300000});
     setNow(end+i*300000);fresh();engine.spot.price=99.7;
-    assert.equal(engine.signal().direction,i===1?'UP':'DOWN');
+    assert.equal(engine.signal().code,'RANGE_BOUNDARY_WAIT');await engine.attempt('paper');
   }
-  await engine.attempt('paper');await engine.attempt('paper');
-  const order=store.orderForRound('paper',round+600);assert.equal(order.direction,'DOWN');
-  assert.equal(order.rangeSignal.breakoutCount,2);assert.equal(order.rangeSignal.tradeFromRound,round+600);
-  assert.equal(store.orderCount('paper'),2);
+  assert.equal(engine.signal().state.phase,'breakout_down');assert.equal(engine.signal().state.breakoutCount,2);
+  assert.equal(store.orderCount('paper'),0);assert.equal(store.account('paper').running,true);
 });
 
-test('price moving below support during a quote still uses unconfirmed edge UP',async t=>{
+test('price moving below support during a quote cancels entry before reservation',async t=>{
   const {engine,store}=setup(t),quote=engine.quote.bind(engine);
   engine.quote=(...args)=>{const fill=quote(...args);engine.spot.price=99.7;return fill;};
   await engine.start('paper');await engine.attempt('paper');
-  assert.equal(store.orderForRound('paper',round).direction,'UP');
+  assert.equal(store.orderForRound('paper',round),null);
+  assert.equal(engine.entryBlocks.paper.code,'RANGE_BOUNDARY_WAIT');
   assert.equal(store.rangeState().breakoutConfirmedAt,null);
 });
 function secondaryBars(){return levelBars().map((bar,i)=>{
@@ -348,7 +394,9 @@ test('live takes market signals even with paper paused; wallet-time direction ch
   await engine.start('live');
   venue.balance=async()=>{source.engine.spot.price=100.19;return 10000;};
   await engine.attempt('live');assert.equal(submissions.length,0);assert.equal(store.orderCount('live'),0);
-  assert.equal(engine.entryBlocks.live.code,'SIGNAL_CHANGED');
+  assert.equal(engine.entryBlocks.live.code,'RANGE_BOUNDARY_WAIT');
+  await engine.attempt('live');assert.equal(submissions.length,0);
+  source.engine.spot.price=100;
   venue.balance=async()=>10000;await engine.attempt('live');
   assert.equal(submissions.length,1);assert.equal(submissions[0].order.direction,'DOWN');
   assert.equal(source.store.orderCount('paper'),0);
@@ -420,7 +468,7 @@ test('base direction and confirmation progress survive SQLite reload with frozen
   let state=store.saveRangeState(decide(null,confirmationCandidate(),150,end,majority,id));assert.equal(state.rangeBaseDirection,'UP');
   state=store.saveRangeState(decide(state,confirmationCandidate(),195,end+1000,majority,id));assert.equal(state.direction,'DOWN');
   store.close();store=new RangeStore(path);state=store.rangeState();assert.equal(state.rangeBaseDirection,'UP');
-  state=store.saveRangeState(decide(state,confirmationCandidate(),150,end+2000,majority,id));assert.equal(state.direction,'UP');
+  state=store.saveRangeState(decide(state,confirmationCandidate(),150,end+2000,majority,id));assert.equal(state.direction,'DOWN');assert.equal(state.rangeBaseDirectionRule,'boundary_return');
   state=store.saveRangeState(decide(state,confirmationCandidate(),201,end+3000,majority,id));
   const candidate=confirmationCandidate({completedRounds:closes([201])});
   state=store.saveRangeState(decide(state,candidate,201,end+300000,majority,id));assert.equal(state.breakoutCount,1);
@@ -534,4 +582,192 @@ test('signal distinguishes initial locked evidence from the latest untraded prev
  setNow(end+300001);fresh();store.saveRoundPrediction({round,conditionId:'untraded',open:100,close:99,outcome:'DOWN',source:'polymarket_last_second',oracleWindow:60,observedAt:end+300000,priceAt:end+299000});
  const signal=engine.signal();assert.equal(signal.state.lockedPreviousRound,round-300);assert.equal(signal.vote.previousRound,round);assert.equal(signal.vote.previousDirection,'DOWN');
  assert.match(signal.message,new RegExp('当时上一场 #'+(round-300)));assert.match(signal.message,new RegExp('当前上一场 #'+round+'：DOWN'));assert.match(signal.message,/未结算，场次预计结果/);assert.equal(signal.direction,'DOWN');
+});
+
+
+test('boundary bands include both thresholds and outside; only the strict middle resumes',()=>{
+  const state={lower:100,upper:200};
+  for(const price of [90,100,120,180,200,210])assert.equal(rangeBoundary(state,price).paused,true);
+  for(const price of [120.00001,150,179.99999])assert.equal(rangeBoundary(state,price).paused,false);
+  const frozen={lower:0,upper:1000,breakoutReferenceLower:100,breakoutReferenceUpper:200};
+  assert.equal(rangeBoundary(frozen,201).paused,true);assert.equal(rangeBoundary(frozen,150).paused,false);
+  assert.equal(rangeBoundary({lower:100,upper:100},100).code,'RANGE_BOUNDARY_INVALID');
+});
+
+for(const side of ['lower','upper'])test(side+' boundary waits and resumes the existing stake once in the middle',async t=>{
+  const c=setup(t);await c.engine.start('paper');
+  c.store.saveAccount({...c.store.account('paper'),losses:2,pnl:-30,cyclePnl:-30});
+  const before=c.store.account('paper'),bounds=c.engine.signal().boundary;
+  c.engine.spot.price=side==='lower'?bounds.middleLower:bounds.middleUpper;
+  await c.engine.attempt('paper');assert.equal(c.store.orderCount('paper'),0);
+  assert.equal(c.engine.entryBlocks.paper.code,'RANGE_BOUNDARY_WAIT');
+  assert.equal(c.store.account('paper').running,true);assert.equal(c.store.account('paper').losses,2);
+  c.engine.spot.price=(bounds.middleLower+bounds.middleUpper)/2;
+  await c.engine.attempt('paper');await c.engine.attempt('paper');
+  const order=c.store.orderForRound('paper',round);
+  assert.equal(order.budget,40);assert.equal(order.direction,side==='lower'?'UP':'DOWN');assert.equal(order.rangeSignal.boundaryResumeSide,side);assert.equal(c.store.orderCount('paper'),1);
+  assert.equal(c.store.account('paper').cycle,before.cycle);assert.equal(c.store.account('paper').pnl,-30);
+});
+
+test('returning to the middle after the entry deadline waits for another round',async t=>{
+  const c=setup(t);await c.engine.start('paper');c.engine.spot.price=100.3;await c.engine.attempt('paper');
+  c.setNow(end+121000);c.fresh();await c.engine.attempt('paper');
+  assert.equal(c.store.orderCount('paper'),0);assert.equal(c.store.account('paper').running,true);
+  c.setNow(end+301000);c.fresh();await c.engine.attempt('paper');assert.equal(c.store.orderCount('paper'),1);
+});
+
+test('retired RP-01 cannot block or reset an account and its API cannot enable it',async t=>{
+  const c=setup(t);await c.engine.start('paper');
+  c.store.db.prepare("INSERT INTO range_protection_state VALUES ('RP-01',1,'UP',60,?,NULL,99,99,0,?)").run(round,end);
+  c.store.db.prepare('UPDATE range_configs SET rp01_enabled=1').run();
+  c.store.saveAccount({...c.store.account('paper'),losses:2,pnl:-30,cyclePnl:-30});
+  c.engine.snapshot();assert.equal(c.engine.signal().direction,'UP');assert.equal(c.store.account('paper').losses,2);
+  assert.equal(Object.hasOwn(c.store.rangeConfig(),'rp01Enabled'),false);
+  assert.throws(()=>validateRangeConfig({rp01Enabled:true}));
+  const server=createApp(c.engine,{allowedModes:['paper']}).listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));t.after(()=>{server.closeAllConnections();server.close();});
+  const base='http://127.0.0.1:'+server.address().port,state=await(await fetch(base+'/api/state')).json();
+  assert.equal(Object.hasOwn(state,'rangeProtection'),false);
+  const response=await fetch(base+'/api/paper/rp01',{method:'POST',headers:{Origin:base,'Content-Type':'application/json','X-Control-Token':state.controlToken},body:JSON.stringify({enabled:true})});
+  assert.equal(response.status,404);
+  await c.engine.attempt('paper');assert.equal(c.store.orderForRound('paper',round).budget,40);
+});
+
+test('historical stake reset still prevents an old settlement from advancing the current cycle',async t=>{
+  const c=setup(t);await c.engine.start('paper');const account=c.store.account('paper');
+  c.store.db.prepare('INSERT INTO range_protection_accounts VALUES (?,?,?,?,?)').run('paper',account.session,1,1,round);
+  c.store.saveAccount({...account,losses:0,pnl:-30,cyclePnl:0});
+  const old={id:'legacy-reset-order',mode:'paper',session:account.session,round:round-300,end:round,direction:'UP',status:'open',cost:40,budget:40,shares:80,createdAt:end-299000};
+  c.store.reserveOrder(old);
+  assert.equal(c.engine.projectAccount(c.store.account('paper'),c.store.pending('paper')).riskPnl,-70);
+  c.engine.spot.price=100.3;c.venue.resolution=async()=>({payout:0});await c.engine.settlePending();
+  assert.equal(c.store.account('paper').pnl,-70);assert.equal(c.store.account('paper').losses,0);
+  assert.equal(c.store.account('paper').cycle,account.cycle);assert.equal(c.store.account('paper').running,true);
+});
+
+for(const side of ['lower','upper'])test('live '+side+' boundary follows source and resumes its independent stake',async t=>{
+  const {source,engine,store,submissions}=setupLive(t);await engine.start('live');
+  store.saveAccount({...store.account('live'),losses:2,pnl:-21,config:{...store.account('live').config,baseAmount:7}});
+  const bounds=source.engine.signal().boundary;source.engine.spot.price=side==='lower'?bounds.middleLower:bounds.middleUpper;
+  await engine.attempt('live');assert.equal(submissions.length,0);assert.equal(store.account('live').running,true);
+  source.engine.spot.price=(bounds.middleLower+bounds.middleUpper)/2;
+  await engine.attempt('live');assert.equal(submissions.length,1);assert.equal(submissions[0].order.budget,28);assert.equal(submissions[0].order.direction,side==='lower'?'UP':'DOWN');
+  assert.equal(source.store.orderCount('paper'),0);assert.equal(store.account('live').pnl,-21);
+});
+
+
+test('configurable edge percentages validate and use inclusive boundaries with a strict middle',()=>{
+  assert.equal(validateRangeConfig().edgePercent,20);
+  for(const value of [-1,50,100,NaN,Infinity,'20',null])assert.throws(()=>validateRangeConfig({edgePercent:value}),/边界比例/);
+  for(const edgePercent of [0,10,25,35.5,49.99]){
+    assert.equal(validateRangeConfig({edgePercent}).edgePercent,edgePercent);
+    const state={lower:100,upper:200,edgePercent},b=rangeBoundary(state,150);
+    assert.equal(b.middleLower,100+edgePercent);assert.equal(b.middleUpper,200-edgePercent);
+    assert.equal(b.paused,false);assert.equal(rangeBoundary(state,b.middleLower).paused,true);assert.equal(rangeBoundary(state,b.middleUpper).paused,true);
+  }
+  assert.match(rangeBoundary({lower:100,upper:200,edgePercent:10},105).message,/10%.*中间 80%/);
+});
+
+test('changing only the edge percentage preserves locked direction and updates paper and live signals',async t=>{
+  const {source,engine}=setupLive(t),first=source.engine.signal(),lower=first.boundary.lower,upper=first.boundary.upper;
+  source.engine.spot.price=lower+(upper-lower)*0.15;
+  assert.equal(source.engine.signal().code,'RANGE_BOUNDARY_WAIT');assert.equal(engine.signal().code,'RANGE_BOUNDARY_WAIT');
+  source.engine.configure('paper',{...source.store.account('paper').config,rangeConfig:{...config,edgePercent:10}});
+  const next=source.engine.signal();assert.equal(next.code,null);assert.equal(next.direction,first.direction);
+  assert.equal(next.state.rangeBaseDirection,first.state.rangeBaseDirection);assert.equal(next.state.formedAt,first.state.formedAt);
+  assert.equal(engine.signal().boundary.edgePercent,10);assert.equal(engine.signal().direction,first.direction);
+  await source.engine.start('paper');await source.engine.attempt('paper');
+  const order=source.store.orderForRound('paper',round);assert.equal(order.rangeSignal.edgePercent,10);
+});
+
+test('edge percentage persists across restart and migration keeps historical default evidence',t=>{
+  const folder=mkdtempSync(join(tmpdir(),'range-edge-')),path=join(folder,'range.sqlite');let store=new RangeStore(path);
+  t.after(()=>{store.close();rmSync(folder,{recursive:true,force:true});});
+  const state=store.saveRangeState(decide(null,confirmationCandidate(),150,end,majority,store.rangeConfig().id));
+  store.reserveOrder({id:'edge-history',mode:'paper',session:store.account('paper').session,round,end:round+300,status:'won',direction:'UP',signalRule:'range_regime',rangeSignal:{...state,priceAt:end,price:150}});
+  // Emulate the database schema before configurable edges were introduced.
+  store.db.exec('ALTER TABLE range_configs DROP COLUMN edge_percent; ALTER TABLE range_regimes DROP COLUMN edge_percent');
+  store.close();store=new RangeStore(path);
+  assert.equal(store.rangeConfig().edgePercent,20);assert.equal(store.order('edge-history').rangeSignal.edgePercent,20);
+  const {id,...old}=store.rangeConfig();store.saveRangeConfig({...old,edgePercent:12.5});
+  store.close();store=new RangeStore(path);
+  assert.equal(store.rangeConfig().edgePercent,12.5);assert.equal(store.rangeState().edgePercent,12.5);
+  assert.equal(store.order('edge-history').rangeSignal.edgePercent,20);
+});
+
+
+for(const side of ['lower','upper'])test(side+' boundary return overrides an opposite vote and stays locked without duplicate transitions',()=>{
+  const candidate=confirmationCandidate(),vote={...majority,direction:side==='lower'?'DOWN':'UP',up:side==='lower'?4:8,down:side==='lower'?8:4};
+  let state=decide(null,candidate,150,end,vote);
+  state=decide(state,candidate,side==='lower'?110:190,end+1000,vote);
+  assert.equal(state.boundaryPauseSide,side);assert.equal(state.boundaryPausedAt,end+1000);
+  state=decide(state,candidate,side==='lower'?120:180,end+2000,vote);assert.equal(state.boundaryPauseSide,side);
+  const resumed=decide(state,candidate,150,end+3000,vote);
+  assert.equal(resumed.direction,side==='lower'?'UP':'DOWN');assert.equal(resumed.rangeBaseDirectionRule,'boundary_return');
+  assert.equal(resumed.boundaryPauseSide,null);assert.equal(resumed.boundaryResumeSide,side);assert.equal(resumed.boundaryResumedAt,end+3000);
+  assert.equal(resumed.boundaryResumePrice,150);assert.equal(resumed.boundaryResumeThreshold,side==='lower'?120:180);
+  const repeated=decide(resumed,candidate,151,end+4000,{complete:false});
+  assert.equal(repeated.direction,resumed.direction);assert.equal(repeated.boundaryResumedAt,resumed.boundaryResumedAt);
+});
+
+test('crossing directly from one paused boundary to the other uses the latest side on return',()=>{
+  const candidate=confirmationCandidate();let state=decide(null,candidate,110);
+  state=decide(state,candidate,190,end+1000);assert.equal(state.boundaryPauseSide,'upper');
+  state=decide(state,candidate,150,end+2000);assert.equal(state.direction,'DOWN');
+  state=decide(state,candidate,110,end+3000);state=decide(state,candidate,150,end+4000);
+  assert.equal(state.direction,'UP');assert.equal(state.boundaryResumeSide,'lower');
+});
+
+for(const side of ['UP','DOWN'])test(side+' confirmed breakout records its boundary and returns with the opposite direction',()=>{
+  const far=side==='UP'?201:99,candidate=confirmationCandidate();let state=decide(null,candidate,far);
+  state=decide(state,{...candidate,completedRounds:closes([far,far])},far,end+600000);
+  assert.equal(state.phase,side==='UP'?'breakout_up':'breakout_down');
+  state=decide(state,candidate,150,end+601000,{complete:false});
+  assert.equal(state.phase,'range');assert.equal(state.direction,side==='UP'?'DOWN':'UP');assert.equal(state.lockedDirectionRule,'boundary_return');
+});
+
+test('boundary return works without historical votes, but missing and stale prices cannot trigger it',async t=>{
+  const c=setup(t,{votes:false});await c.engine.start('paper');c.engine.spot.price=99.7;await c.engine.attempt('paper');
+  assert.equal(c.store.rangeState().boundaryPauseSide,'lower');assert.equal(c.store.orderCount('paper'),0);
+  c.engine.spot.price=100;c.engine.spot.at=c.now()-6001;assert.equal(c.engine.signal().code,'RANGE_PRICE_STALE');
+  assert.equal(c.store.rangeState().boundaryPauseSide,'lower');assert.equal(c.store.rangeState().boundaryResumedAt,null);
+  c.fresh();await c.engine.attempt('paper');
+  const order=c.store.orderForRound('paper',round);assert.equal(order.direction,'UP');assert.equal(order.rangeSignal.directionRule,'boundary_return');
+  assert.match(c.engine.signal().message,/下支撑侧向上.*买 UP/);
+});
+
+test('paused side and resumed direction persist across SQLite restart without rewriting old order evidence',t=>{
+  const folder=mkdtempSync(join(tmpdir(),'boundary-return-')),path=join(folder,'range.sqlite');let store=new RangeStore(path);
+  t.after(()=>{store.close();rmSync(folder,{recursive:true,force:true});});
+  const id=store.rangeConfig().id,candidate=confirmationCandidate();
+  store.saveRangeState(decide(null,candidate,190,end,majority,id));store.close();store=new RangeStore(path);
+  assert.equal(store.rangeState().boundaryPauseSide,'upper');
+  const state=store.saveRangeState(decide(store.rangeState(),candidate,150,end+1000,majority,id));
+  store.reserveOrder({id:'return-evidence',mode:'paper',session:store.account('paper').session,round,end:round+300,status:'won',direction:'DOWN',signalRule:'range_regime',rangeSignal:{...state,price:150,priceAt:end+1000,directionRule:state.lockedDirectionRule}});
+  store.close();store=new RangeStore(path);
+  const repeated=store.saveRangeState(decide(store.rangeState(),candidate,151,end+2000,{complete:false,expected:12},id));
+  assert.equal(repeated.direction,'DOWN');assert.equal(repeated.boundaryResumedAt,end+1000);
+  const old=store.order('return-evidence').rangeSignal;assert.equal(old.boundaryResumeSide,'upper');assert.equal(old.boundaryResumeThreshold,180);assert.equal(old.boundaryResumePrice,150);
+});
+
+test('a new boundary return direction cannot place a second order in the same round',async t=>{
+  const c=setup(t);await c.engine.start('paper');await c.engine.attempt('paper');
+  const first=c.store.orderForRound('paper',round);assert.equal(first.direction,'UP');
+  c.engine.spot.price=100.3;assert.equal(c.engine.signal().code,'RANGE_BOUNDARY_WAIT');
+  c.engine.spot.price=100;assert.equal(c.engine.signal().direction,'DOWN');
+  await c.engine.attempt('paper');assert.equal(c.store.orderCount('paper'),1);
+  assert.equal(c.store.orderForRound('paper',round).id,first.id);assert.equal(c.store.account('paper').running,true);
+});
+
+
+for(const side of ['lower','upper'])test('upgrade retains the active '+side+' pause without altering historical state',t=>{
+  const folder=mkdtempSync(join(tmpdir(),'boundary-upgrade-')),path=join(folder,'range.sqlite');let store=new RangeStore(path);
+  t.after(()=>{store.close();rmSync(folder,{recursive:true,force:true});});
+  const candidate=confirmationCandidate(),id=store.rangeConfig().id;
+  const old=store.saveRangeState(decide(null,candidate,side==='lower'?110:190,end,majority,id));
+  for(const name of ['boundary_pause_side','boundary_paused_at','boundary_resume_side','boundary_resumed_at','boundary_resume_price','boundary_resume_threshold'])store.db.exec('ALTER TABLE range_regimes DROP COLUMN '+name);
+  store.close();store=new RangeStore(path);
+  assert.equal(store.rangeState().boundaryPauseSide,side);assert.notEqual(store.rangeState().id,old.id);
+  assert.equal(store.db.prepare('SELECT boundary_pause_side AS side FROM range_regimes WHERE id=?').get(old.id).side,null);
+  const resumed=store.saveRangeState(decide(store.rangeState(),candidate,150,end+1000,majority,id));
+  assert.equal(resumed.direction,side==='lower'?'UP':'DOWN');
 });

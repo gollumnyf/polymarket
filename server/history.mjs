@@ -3,7 +3,8 @@ import { safeError } from './polymarket.mjs';
 import { recordRoundSignals, SIGNAL_SAMPLE_SECONDS, withReversal } from './round-signals.mjs';
 import {oppositeDirection} from '../src/entry-mode.mjs';
 
-export const HISTORY_COUNT = 20;
+import {HISTORY_COUNT} from '../src/history-summary.mjs';
+export {HISTORY_COUNT};
 const positivePrice = value => {
   if (value == null || value === '') return null;
   const price = Number(value);

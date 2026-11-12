@@ -3,7 +3,7 @@ import {DEFAULT_CONFIG} from './strategy.mjs';
 import {RANGE_DEFAULTS,RANGE_BUCKET_MS,validateRangeConfig} from './range-strategy.mjs';
 
 export const RANGE_TRADING_CONFIG=Object.freeze({...DEFAULT_CONFIG,entryDelay:0,entryWindow:120,maxPrice:0.5});
-const stateFields={breakoutReferenceLower:'breakout_reference_lower',breakoutReferenceUpper:'breakout_reference_upper',breakoutPendingDirection:'breakout_pending_direction',breakoutStartRound:'breakout_start_round',breakoutLastRound:'breakout_last_round',breakoutCount:'breakout_count',breakoutLastClose:'breakout_last_close',breakoutLastSource:'breakout_last_source',breakoutConfirmedAt:'breakout_confirmed_at',rangeBaseDirection:'range_base_direction',rangeBaseDirectionRule:'range_base_direction_rule',configId:'config_id',oracleWindow:'oracle_window',phase:'phase',lower:'lower_price',upper:'upper_price',direction:'direction',upCount:'up_count',downCount:'down_count',expectedCount:'expected_count',supportTouches:'support_touches',resistanceTouches:'resistance_touches',widthPercent:'width_percent',roundTrips:'round_trips',windowStart:'window_start',windowEnd:'window_end',formedAt:'formed_at',breakoutSince:'breakout_since',changedAt:'changed_at',levelTimeframeMinutes:'level_timeframe_minutes',levelLookbackHours:'level_lookback_hours',levelWindowStart:'level_window_start',levelWindowEnd:'level_window_end',supportSource:'support_source',resistanceSource:'resistance_source',actualLower:'actual_lower',actualUpper:'actual_upper',lockedDirectionRule:'locked_direction_rule',lockedPreviousRound:'locked_previous_round',lockedPreviousDirection:'locked_previous_direction',lockedPreviousSource:'locked_previous_source',directionSelectedAt:'direction_selected_at',tradeFromRound:'trade_from_round',formedFrom:'formed_from'};
+const stateFields={boundaryPauseSide:'boundary_pause_side',boundaryPausedAt:'boundary_paused_at',boundaryResumeSide:'boundary_resume_side',boundaryResumedAt:'boundary_resumed_at',boundaryResumePrice:'boundary_resume_price',boundaryResumeThreshold:'boundary_resume_threshold',edgePercent:'edge_percent',levelLagMinutes:'level_lag_minutes',breakoutReferenceLower:'breakout_reference_lower',breakoutReferenceUpper:'breakout_reference_upper',breakoutPendingDirection:'breakout_pending_direction',breakoutStartRound:'breakout_start_round',breakoutLastRound:'breakout_last_round',breakoutCount:'breakout_count',breakoutLastClose:'breakout_last_close',breakoutLastSource:'breakout_last_source',breakoutConfirmedAt:'breakout_confirmed_at',rangeBaseDirection:'range_base_direction',rangeBaseDirectionRule:'range_base_direction_rule',configId:'config_id',oracleWindow:'oracle_window',phase:'phase',lower:'lower_price',upper:'upper_price',direction:'direction',upCount:'up_count',downCount:'down_count',expectedCount:'expected_count',supportTouches:'support_touches',resistanceTouches:'resistance_touches',widthPercent:'width_percent',roundTrips:'round_trips',windowStart:'window_start',windowEnd:'window_end',formedAt:'formed_at',breakoutSince:'breakout_since',changedAt:'changed_at',levelTimeframeMinutes:'level_timeframe_minutes',levelLookbackHours:'level_lookback_hours',levelWindowStart:'level_window_start',levelWindowEnd:'level_window_end',supportSource:'support_source',resistanceSource:'resistance_source',actualLower:'actual_lower',actualUpper:'actual_upper',lockedDirectionRule:'locked_direction_rule',lockedPreviousRound:'locked_previous_round',lockedPreviousDirection:'locked_previous_direction',lockedPreviousSource:'locked_previous_source',directionSelectedAt:'direction_selected_at',tradeFromRound:'trade_from_round',formedFrom:'formed_from'};
 const sourcePriority={pending:0,polymarket_last_second:1,polymarket_crypto_price:2,polymarket_event_metadata:2,official:3,official_void:3};
 const decisionFields={directionRule:'direction_rule',decisionUpCount:'decision_up_count',decisionDownCount:'decision_down_count',tiePreviousRound:'tie_previous_round',tiePreviousDirection:'tie_previous_direction',tiePreviousSource:'tie_previous_source'};
 
@@ -21,15 +21,24 @@ export class RangeStore extends Store {
       CREATE TABLE IF NOT EXISTS range_market_prices(oracle_window INTEGER NOT NULL,round INTEGER NOT NULL,open_price REAL NOT NULL,close_price REAL NOT NULL,fetched_at INTEGER NOT NULL,PRIMARY KEY(oracle_window,round));
       CREATE TABLE IF NOT EXISTS range_order_signals(order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,regime_id INTEGER NOT NULL REFERENCES range_regimes(id),observed_at INTEGER NOT NULL,observed_price REAL NOT NULL);
       CREATE INDEX IF NOT EXISTS range_tick_window ON ticks(source,oracle_window,time);
+      CREATE TABLE IF NOT EXISTS range_protection_state(policy_id TEXT PRIMARY KEY,active INTEGER NOT NULL,direction TEXT,oracle_window INTEGER,trigger_round INTEGER,release_round INTEGER,release_id INTEGER NOT NULL,event_id INTEGER NOT NULL,recovery_count INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS range_protection_events(id INTEGER PRIMARY KEY,policy_id TEXT NOT NULL,event_type TEXT NOT NULL,direction TEXT,round INTEGER NOT NULL,time INTEGER NOT NULL,first_round INTEGER,last_round INTEGER,first_outcome TEXT,last_outcome TEXT,first_source TEXT,last_source TEXT);
+      CREATE TABLE IF NOT EXISTS range_protection_accounts(mode TEXT PRIMARY KEY,session TEXT NOT NULL,last_event_id INTEGER NOT NULL,release_id INTEGER NOT NULL,reset_round INTEGER);
     `);
-    for(const [table,columns] of Object.entries({range_configs:{breakout_percent:'REAL NOT NULL DEFAULT 0.1',breakout_rounds:'INTEGER NOT NULL DEFAULT 2',level_lookback_hours:'INTEGER NOT NULL DEFAULT 4',min_level_touches:'INTEGER NOT NULL DEFAULT 2',level_tolerance_percent:'REAL NOT NULL DEFAULT 0.05'},range_regimes:{breakout_reference_lower:'REAL',breakout_reference_upper:'REAL',breakout_pending_direction:'TEXT',breakout_start_round:'INTEGER',breakout_last_round:'INTEGER',breakout_count:'INTEGER',breakout_last_close:'REAL',breakout_last_source:'TEXT',breakout_confirmed_at:'INTEGER',range_base_direction:'TEXT',range_base_direction_rule:'TEXT',trade_from_round:'INTEGER',formed_from:'TEXT',actual_lower:'REAL',actual_upper:'REAL',locked_direction_rule:'TEXT',locked_previous_round:'INTEGER',locked_previous_direction:'TEXT',locked_previous_source:'TEXT',direction_selected_at:'INTEGER',support_source:"TEXT NOT NULL DEFAULT 'touches'",resistance_source:"TEXT NOT NULL DEFAULT 'touches'",level_timeframe_minutes:'INTEGER NOT NULL DEFAULT 0',level_lookback_hours:'INTEGER NOT NULL DEFAULT 0',level_window_start:'INTEGER',level_window_end:'INTEGER',support_touches:'INTEGER NOT NULL DEFAULT 0',resistance_touches:'INTEGER NOT NULL DEFAULT 0',width_percent:'REAL',round_trips:'INTEGER NOT NULL DEFAULT 0'}})){
+    const migrateBoundaryReturn=!this.db.prepare('PRAGMA table_info(range_regimes)').all().some(column=>column.name==='boundary_pause_side');
+    for(const [table,columns] of Object.entries({range_configs:{edge_percent:'REAL NOT NULL DEFAULT 20',breakout_percent:'REAL NOT NULL DEFAULT 0.1',breakout_rounds:'INTEGER NOT NULL DEFAULT 2',level_lookback_hours:'INTEGER NOT NULL DEFAULT 4',min_level_touches:'INTEGER NOT NULL DEFAULT 2',level_tolerance_percent:'REAL NOT NULL DEFAULT 0.05'},range_regimes:{boundary_pause_side:'TEXT',boundary_paused_at:'INTEGER',boundary_resume_side:'TEXT',boundary_resumed_at:'INTEGER',boundary_resume_price:'REAL',boundary_resume_threshold:'REAL',edge_percent:'REAL NOT NULL DEFAULT 20',breakout_reference_lower:'REAL',breakout_reference_upper:'REAL',breakout_pending_direction:'TEXT',breakout_start_round:'INTEGER',breakout_last_round:'INTEGER',breakout_count:'INTEGER',breakout_last_close:'REAL',breakout_last_source:'TEXT',breakout_confirmed_at:'INTEGER',range_base_direction:'TEXT',range_base_direction_rule:'TEXT',trade_from_round:'INTEGER',formed_from:'TEXT',actual_lower:'REAL',actual_upper:'REAL',locked_direction_rule:'TEXT',locked_previous_round:'INTEGER',locked_previous_direction:'TEXT',locked_previous_source:'TEXT',direction_selected_at:'INTEGER',support_source:"TEXT NOT NULL DEFAULT 'touches'",resistance_source:"TEXT NOT NULL DEFAULT 'touches'",level_timeframe_minutes:'INTEGER NOT NULL DEFAULT 0',level_lookback_hours:'INTEGER NOT NULL DEFAULT 0',level_window_start:'INTEGER',level_window_end:'INTEGER',support_touches:'INTEGER NOT NULL DEFAULT 0',resistance_touches:'INTEGER NOT NULL DEFAULT 0',width_percent:'REAL',round_trips:'INTEGER NOT NULL DEFAULT 0'}})){
       const names=new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(column=>column.name));
       for(const [name,type] of Object.entries(columns))if(!names.has(name))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
     }
+    if(!this.db.prepare('PRAGMA table_info(range_configs)').all().some(column=>column.name==='rp01_enabled'))this.db.exec('ALTER TABLE range_configs ADD COLUMN rp01_enabled INTEGER NOT NULL DEFAULT 0');
+    const migrateLevelLag=!this.db.prepare('PRAGMA table_info(range_configs)').all().some(column=>column.name==='level_lag_minutes');
+    if(migrateLevelLag)this.db.exec('ALTER TABLE range_configs ADD COLUMN level_lag_minutes INTEGER NOT NULL DEFAULT 0');
+    if(!this.db.prepare('PRAGMA table_info(range_regimes)').all().some(column=>column.name==='level_lag_minutes'))this.db.exec('ALTER TABLE range_regimes ADD COLUMN level_lag_minutes INTEGER NOT NULL DEFAULT 0');
     const signalColumns=new Set(this.db.prepare('PRAGMA table_info(range_order_signals)').all().map(column=>column.name));
+    for(const [name,type] of Object.entries({rp01_enabled:'INTEGER',rp01_release_id:'INTEGER'}))if(!signalColumns.has(name))this.db.exec(`ALTER TABLE range_order_signals ADD COLUMN ${name} ${type}`);
     for(const [key,column] of Object.entries(decisionFields))if(!signalColumns.has(column))this.db.exec(`ALTER TABLE range_order_signals ADD COLUMN ${column} ${key.endsWith('Count')||key.endsWith('Round')?'INTEGER':'TEXT'}`);
     if(!this.db.prepare('SELECT 1 FROM range_control').get())this.transaction(()=>{
-      const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,level_lookback_hours,max_width_percent,min_round_trips,created_at) VALUES (?,?,?,?,?)').run(RANGE_DEFAULTS.lookbackHours,RANGE_DEFAULTS.levelLookbackHours,1,0,Date.now());
+      const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,level_lookback_hours,level_lag_minutes,max_width_percent,min_round_trips,created_at) VALUES (?,?,?,?,?,?)').run(RANGE_DEFAULTS.lookbackHours,RANGE_DEFAULTS.levelLookbackHours,RANGE_DEFAULTS.levelLagMinutes,1,0,Date.now());
       this.db.prepare('INSERT INTO range_control VALUES (1,?,NULL)').run(result.lastInsertRowid);
     });
     // Retain old order evidence, but never reuse five-second levels for new entries.
@@ -44,6 +53,14 @@ export class RangeStore extends Store {
       WHERE phase='range' AND range_base_direction IS NULL AND
         (locked_direction_rule IN ('range_majority','tie_reverse_previous') OR
          (locked_direction_rule='range_edge_reversion' AND up_count+down_count=expected_count));`);
+    if(migrateLevelLag){const {id,...config}=this.rangeConfig();this.saveRangeConfig({...config,levelLagMinutes:RANGE_DEFAULTS.levelLagMinutes});}
+    if(migrateBoundaryReturn){
+      const state=this.rangeState();
+      const side=state?.phase==='breakout_up'?'upper':state?.phase==='breakout_down'?'lower':
+        state?.lockedDirectionRule==='range_edge_reversion'?(state.direction==='UP'?'lower':state.direction==='DOWN'?'upper':null):null;
+      // Copy the active state only; archived orders retain their original evidence.
+      if(side)this.saveRangeState({...state,boundaryPauseSide:side,boundaryPausedAt:Date.now()});
+    }
     this.rangeReady=true;
     this.insertTick=this.db.prepare('INSERT OR IGNORE INTO ticks(source,time,price,oracle_window) VALUES (?,?,?,?)');
     this.upsertBar=this.db.prepare(`INSERT INTO range_price_bars VALUES (?,?,?,?,?,?,?,?,0,1) ON CONFLICT(oracle_window,bucket) DO UPDATE SET
@@ -54,14 +71,17 @@ export class RangeStore extends Store {
       first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at),samples=samples+1`);
   }
   freshAccount(mode,config=RANGE_TRADING_CONFIG){return super.freshAccount(mode,config);}
-  rangeConfig(){return {...this.db.prepare('SELECT c.id,c.lookback_hours AS lookbackHours,c.level_lookback_hours AS levelLookbackHours,c.breakout_percent AS breakoutPercent,c.breakout_rounds AS breakoutRounds FROM range_configs c JOIN range_control s ON s.config_id=c.id WHERE s.id=1').get()};}
+  rangeConfig(){const row=this.db.prepare('SELECT c.id,c.lookback_hours AS lookbackHours,c.level_lookback_hours AS levelLookbackHours,c.breakout_percent AS breakoutPercent,c.breakout_rounds AS breakoutRounds,c.level_lag_minutes AS levelLagMinutes,c.edge_percent AS edgePercent FROM range_configs c JOIN range_control s ON s.config_id=c.id WHERE s.id=1').get();return {...row};}
   saveRangeConfig(input){
     const config=validateRangeConfig(input),previous=this.rangeConfig();
     if(Object.keys(config).every(key=>config[key]===previous[key]))return previous;
-    const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,level_lookback_hours,max_width_percent,min_round_trips,min_level_touches,level_tolerance_percent,breakout_percent,breakout_rounds,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(config.lookbackHours,config.levelLookbackHours,1,0,0,0,config.breakoutPercent,config.breakoutRounds,Date.now());
+    const keepRegime=Object.keys(config).every(key=>key==='edgePercent'||config[key]===previous[key])?this.rangeState():null;
+    const result=this.db.prepare('INSERT INTO range_configs(lookback_hours,level_lookback_hours,max_width_percent,min_round_trips,min_level_touches,level_tolerance_percent,breakout_percent,breakout_rounds,rp01_enabled,level_lag_minutes,edge_percent,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(config.lookbackHours,config.levelLookbackHours,1,0,0,0,config.breakoutPercent,config.breakoutRounds,0,config.levelLagMinutes,config.edgePercent,Date.now());
     this.db.prepare('UPDATE range_control SET config_id=?,regime_id=NULL WHERE id=1').run(result.lastInsertRowid);
+    if(keepRegime)this.saveRangeState({...keepRegime,configId:Number(result.lastInsertRowid),edgePercent:config.edgePercent});
     return this.rangeConfig();
   }
+  protectionAccount(mode){return this.db.prepare('SELECT session,last_event_id AS lastEventId,release_id AS releaseId,reset_round AS resetRound FROM range_protection_accounts WHERE mode=?').get(mode)||null;}
   rangeState(){
     const row=this.db.prepare('SELECT r.* FROM range_regimes r JOIN range_control c ON c.regime_id=r.id WHERE c.id=1').get();
     return row?{id:row.id,...Object.fromEntries(Object.entries(stateFields).map(([key,column])=>[key,row[column]]))}:null;
@@ -109,8 +129,8 @@ export class RangeStore extends Store {
   });}
   readOrder(row){
     const order=super.readOrder(row);
-    if(order&&this.rangeReady){const signal=this.db.prepare(`SELECT r.*,${Object.values(decisionFields).map(column=>'s.'+column).join(',')},s.observed_at AS priceAt,s.observed_price AS price FROM range_order_signals s JOIN range_regimes r ON r.id=s.regime_id WHERE s.order_id=?`).get(order.id);
-      if(signal)order.rangeSignal={id:signal.id,priceAt:signal.priceAt,price:signal.price,...Object.fromEntries(Object.entries({...stateFields,...decisionFields}).map(([key,column])=>[key,signal[column]]))};}
+    if(order&&this.rangeReady){const signal=this.db.prepare(`SELECT r.*,${Object.values(decisionFields).map(column=>'s.'+column).join(',')},s.observed_at AS priceAt,s.observed_price AS price,s.rp01_enabled,s.rp01_release_id FROM range_order_signals s JOIN range_regimes r ON r.id=s.regime_id WHERE s.order_id=?`).get(order.id);
+      if(signal)order.rangeSignal={id:signal.id,priceAt:signal.priceAt,price:signal.price,rp01Enabled:signal.rp01_enabled==null?null:!!signal.rp01_enabled,rp01ReleaseId:signal.rp01_release_id,...Object.fromEntries(Object.entries({...stateFields,...decisionFields}).map(([key,column])=>[key,signal[column]]))};}
     return order;
   }
   seedFrom(stores,now=Date.now()){

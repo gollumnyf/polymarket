@@ -2,6 +2,8 @@ import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'reac
 import { createPortal } from 'react-dom';
 import { ArrowDownRight, ArrowUpRight, Clock3, RotateCcw } from 'lucide-react';
 import {apiPath} from './api.mjs';
+import {HISTORY_COUNT,summarizeHistory} from './history-summary.mjs';
+import {positionHistoryTooltip} from './history-tooltip.mjs';
 
 const price = value => value == null ? '待公布' : `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const formatTime = seconds => new Date(seconds * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -13,6 +15,10 @@ export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5
   const [hovered, setHovered] = useState(null);
   const id = useId();
   const tooltipRef = useRef(null);
+  const hideTimer = useRef(null);
+  const keepOpen = () => clearTimeout(hideTimer.current);
+  const hide = () => { keepOpen(); hideTimer.current=setTimeout(()=>setHovered(null),160); };
+  useEffect(()=>()=>clearTimeout(hideTimer.current),[]);
   useEffect(() => {
     let stopped = false;
     let timer;
@@ -32,39 +38,44 @@ export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5
     return () => { stopped = true; clearTimeout(timer); controller.abort(); };
   }, [round, mode, entryDelay,followPreviousAtOpen,reverseSignal]);
   useEffect(() => {
-    const clear = () => setHovered(null);
+    const clear = event => {
+      if(event.target instanceof Node&&tooltipRef.current?.contains(event.target))return;
+      clearTimeout(hideTimer.current);setHovered(null);
+    };
     addEventListener('scroll', clear, true); addEventListener('resize', clear);
     return () => { removeEventListener('scroll', clear, true); removeEventListener('resize', clear); };
   }, []);
-  const items = Array.from({ length: 20 }, (_, i) => {
-    const start = round - (20 - i) * 300;
+  const items = Array.from({ length: HISTORY_COUNT }, (_, i) => {
+    const start = round - (HISTORY_COUNT - i) * 300;
     const item = history.items.find(item => item.round === start);
     if (!item) return { round: start, end: start + 300, status: 'loading' };
     return history.mode === mode && history.entryDelay === entryDelay && Boolean(history.followPreviousAtOpen)===followPreviousAtOpen && Boolean(history.reverseSignal)===reverseSignal ? item
       : { ...item,initialSignal:null,reversal:null,trade:null,entryBlock:null };
   });
+  const counts = summarizeHistory(items);
   const active = hovered && items.find(item => item.round === hovered.round);
   useLayoutEffect(() => {
     if (!active || !hovered || !tooltipRef.current) return;
-    const height = tooltipRef.current.getBoundingClientRect().height;
-    const top = hovered.anchorBottom + 10 + height <= window.innerHeight - 12
-      ? hovered.anchorBottom + 10 : Math.max(12, hovered.anchorTop - height - 10);
-    if (top !== hovered.top) setHovered(current => current && ({ ...current, top }));
+    const panel=tooltipRef.current;
+    const height=panel.scrollHeight+panel.offsetHeight-panel.clientHeight;
+    const layout=positionHistoryTooltip(hovered.anchor,hovered.preferredWidth,height,window.innerWidth,window.innerHeight);
+    if(!hovered.ready||Object.keys(layout).some(key=>layout[key]!==hovered[key]))
+      setHovered(current=>current&&current.round===hovered.round?{...current,...layout,ready:true}:current);
   }, [active, hovered]);
   const show = (event, item) => {
+    keepOpen();
     const bounds = event.currentTarget.getBoundingClientRect();
     const width = Math.min(item.entryBlock&&!item.trade?360:258, window.innerWidth - 24);
-    setHovered({ round: item.round, width, anchorTop: bounds.top, anchorBottom: bounds.bottom,
-      left: Math.max(12, Math.min(bounds.left + bounds.width / 2 - width / 2, window.innerWidth - width - 12)),
-      top: bounds.bottom + 10 + 218 < window.innerHeight ? bounds.bottom + 10 : Math.max(12, bounds.top - 228) });
+    setHovered({round:item.round,width,preferredWidth:width,ready:false,left:12,top:12,
+      anchor:{top:bounds.top,bottom:bounds.bottom,left:bounds.left,right:bounds.right}});
   };
   return <div className="round-history">
-    <div className="round-history-heading"><span>最近 20 场</span><div><span><i className="history-key up"/>UP</span><span><i className="history-key down"/>DOWN</span><span><i className="history-key reversal"/>反转 · {momentum?'实际买入':<>第 {entryDelay} 秒</>}</span><span><i className="history-key pending"/>待结算</span></div><small>早 → 近</small></div>
-    <div className="round-history-dots" role="group" aria-label="最近二十场 BTC 五分钟市场最终结果，按时间从早到近排列">
-      {items.map(item => <a href={`https://polymarket.com/event/btc-updown-5m-${item.round}`} target="_blank" rel="noopener noreferrer" key={item.round} className={`round-marker ${item.result?.toLowerCase() || 'pending'}${item.reversal === true ? ' reversed' : ''}`} aria-label={`${formatTime(item.round)} 至 ${formatTime(item.end)}，${resultLabel(item)}${item.reversal === true ? `，反转，初始 ${item.initialSignal.direction}` : ''}`} aria-describedby={active?.round === item.round ? id : undefined} onMouseEnter={event => show(event, item)} onMouseLeave={() => setHovered(null)} onFocus={event => show(event, item)} onBlur={() => setHovered(null)} onClick={event => show(event, item)}><span className="round-result-dot">{item.reversal === true && <RotateCcw size={10} strokeWidth={2.5}/>}</span></a>)}
+    <div className="round-history-heading"><div className="round-history-counts" title="按展示场次的官方最终结果统计；尚无结果的场次不计入 UP/DOWN"><span>最近 {HISTORY_COUNT} 场</span><span className="green"><i className="history-key up"/>UP {counts.up} 场</span><span className="red"><i className="history-key down"/>DOWN {counts.down} 场</span>{counts.pending>0&&<span>待定 {counts.pending} 场</span>}{counts.void>0&&<span>作废 {counts.void} 场</span>}</div><div><span><i className="history-key reversal"/>反转 · {momentum?'实际买入':<>第 {entryDelay} 秒</>}</span><span><i className="history-key pending"/>待结算</span></div><small title="每行从左到右，再从上到下">早 → 近</small></div>
+    <div className="round-history-dots" role="group" aria-label={`最近 ${HISTORY_COUNT} 场 BTC 五分钟市场最终结果，从左到右、从上到下按时间从早到近排列`}>
+      {items.map(item => <a href={`https://polymarket.com/event/btc-updown-5m-${item.round}`} target="_blank" rel="noopener noreferrer" key={item.round} className={`round-marker ${item.result?.toLowerCase() || 'pending'}${item.reversal === true ? ' reversed' : ''}`} aria-label={`${formatTime(item.round)} 至 ${formatTime(item.end)}，${resultLabel(item)}${item.reversal === true ? `，反转，初始 ${item.initialSignal.direction}` : ''}`} aria-describedby={active?.round === item.round ? id : undefined} onMouseEnter={event => show(event, item)} onMouseLeave={hide} onFocus={event => show(event, item)} onBlur={hide} onClick={event => show(event, item)}><span className="round-result-dot">{item.reversal === true && <RotateCcw size={10} strokeWidth={2.5}/>}</span></a>)}
     </div>
     {history.error && <p className="round-history-error">历史数据更新暂不可用，已确认结果继续保留。</p>}
-    {active && createPortal(<div ref={tooltipRef} id={id} role="tooltip" className="round-history-tooltip" style={{ left: hovered.left, top: hovered.top, width: hovered.width }}>
+    {active && createPortal(<div ref={tooltipRef} id={id} role="tooltip" tabIndex={0} onMouseEnter={keepOpen} onMouseLeave={hide} onFocus={keepOpen} onBlur={hide} data-placement={hovered.placement} className="round-history-tooltip" style={{ left: hovered.left, top: hovered.top, width: hovered.width, maxHeight:hovered.maxHeight, visibility:hovered.ready?'visible':'hidden' }}>
       <div className="round-tooltip-heading"><strong>BTC 5 分钟</strong><span className={active.result === 'UP' ? 'green' : active.result === 'DOWN' ? 'red' : ''}>{active.result === 'UP' ? <ArrowUpRight size={13}/> : active.result === 'DOWN' ? <ArrowDownRight size={13}/> : <Clock3 size={12}/>} {resultLabel(active)}</span></div>
       <p className="round-tooltip-date">{new Date(active.round * 1000).toLocaleDateString('zh-CN')} · {formatTime(active.round)} – {formatTime(active.end)}</p>
       <HistoricalRoundDetails active={active} mode={mode} entryDelay={entryDelay} followPreviousAtOpen={followPreviousAtOpen} reverseSignal={reverseSignal} momentum={momentum}/>

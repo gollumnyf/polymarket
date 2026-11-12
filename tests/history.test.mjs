@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { normalizeHistoricalRound, RoundHistory } from '../server/history.mjs';
 import { roundStart } from '../server/strategy.mjs';
 import { Store } from '../server/store.mjs';
+import {summarizeHistory} from '../src/history-summary.mjs';
 
 function fixture(round, { open = 74500, close = 74520, labels = ['Up', 'Down'], payouts = ['1', '0'], status = 'resolved' } = {}) {
   const slug = `btc-updown-5m-${round}`, conditionId = `condition-${round}`;
@@ -37,7 +38,7 @@ test('invalid prices stay missing and split payouts do not produce invented red 
   assert.equal(normalizeHistoricalRound(1800000000, event, resolution).status, 'pending');
 });
 
-test('history keeps exactly 20 completed windows oldest first and caches finalized results across refreshes', async () => {
+test('history keeps exactly 40 completed windows oldest first and caches finalized results across refreshes', async () => {
   let now = 1800000010000, requests = 0;
   const batches = [];
   const venue = {
@@ -51,15 +52,15 @@ test('history keeps exactly 20 completed windows oldest first and caches finaliz
   };
   const history = new RoundHistory(venue, { now: () => now });
   const first = await history.read();
-  assert.equal(first.items.length, 20);
-  assert.equal(first.items[0].round, roundStart(now) - 6000);
+  assert.equal(first.items.length, 40);
+  assert.equal(first.items[0].round, roundStart(now) - 12000);
   assert.equal(first.items.at(-1).round, roundStart(now) - 300);
   assert.ok(first.items.every(item => item.result === 'UP'));
   now += 20000; await history.read(); assert.equal(requests, 1);
   now += 300000;
   const next = await history.read();
   assert.equal(requests, 2); assert.equal(batches[1].length, 1);
-  assert.equal(next.items.length, 20); assert.equal(next.items.at(-1).round, roundStart(now) - 300);
+  assert.equal(next.items.length, 40); assert.equal(next.items.at(-1).round, roundStart(now) - 300);
 });
 
 test('failed history refresh retains previously finalized results and does not hide the missing new window', async () => {
@@ -74,7 +75,7 @@ test('failed history refresh retains previously finalized results and does not h
   const history = new RoundHistory(venue, { now: () => now });
   await history.read(); failing = true; now += 300000;
   const next = await history.read();
-  assert.equal(next.items.filter(item => item.result === 'DOWN').length, 19);
+  assert.equal(next.items.filter(item => item.result === 'DOWN').length, 39);
   assert.equal(next.items.at(-1).status, 'loading');
   assert.match(next.error, /history timeout/);
 });
@@ -148,4 +149,13 @@ test('historical fallback uses archived signal reference only with an unambiguou
   store.saveInitialSignal({round,targetSeconds:10,observedAt:(round+10)*1000,referencePrice:100,price:101,
     direction:'UP',rule:'current_round_open',source:'polymarket',oracleWindow:30});
   assert.equal(history.snapshot().items.at(-1).forecast,null);
+});
+
+
+test('history counts match displayed official results and exclude pending forecasts and void rounds',()=>{
+  const items=[{result:'UP',status:'resolved'},{result:'DOWN',status:'resolved'},
+    {result:null,status:'pending',forecast:{outcome:'UP'}},{status:'loading'},{status:'unavailable'},{status:'void'}];
+  assert.deepEqual(summarizeHistory(items),{up:1,down:1,pending:3,void:1});
+  items[2]={result:'DOWN',status:'resolved',forecast:{outcome:'UP'}};
+  assert.deepEqual(summarizeHistory(items),{up:1,down:2,pending:2,void:1});
 });

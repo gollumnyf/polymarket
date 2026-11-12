@@ -283,7 +283,7 @@ test('saved history and entry blocks survive restart and remain available when t
   assert.equal(store.entryBlocks().paper.message,'low depth');
   const next = new RoundHistory(venue,{store,now:() => now+300000});
   const read = await next.read();
-  assert.equal(read.items.filter(i => i.result==='UP').length,19); assert.match(read.error,/offline/);
+  assert.equal(read.items.filter(i => i.result==='UP').length,20); assert.match(read.error,/offline/);
   const round=1800000000-300;
   store.saveHistoricalRound({round,end:round+300,slug:`btc-updown-5m-${round}`,status:'unavailable',result:null,open:null,close:null});
   assert.equal(store.historicalRound(round).result,'UP');
