@@ -92,7 +92,7 @@ function App() {
     if (baseLocked) setEditingBase(false);
   }, [mode, account?.config.baseAmount, editingBase, baseLocked]);
 
-  function switchMode(next) { location.assign(['range','reports'].includes(next)?`/${next}`:'/live'); }
+  function switchMode(next) { location.assign(['range','gam','reports'].includes(next) ? `/${next}` : '/live'); }
   async function action(path, body = {}) {
     if (busy) return false;
     setBusy(true);
