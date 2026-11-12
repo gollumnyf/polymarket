@@ -10,6 +10,7 @@ import RangeStatus,{RangeGuide} from './RangeStatus.jsx';
 import Sidebar from './Sidebar.jsx';
 import ReportsPage from './ReportsPage.jsx';
 import {entryModeLabel,oppositeDirection} from './entry-mode.mjs';
+import GamMvPage from './GamMvPage.jsx';
 
 const fmt = (n, digits = 2) => n == null || !Number.isFinite(Number(n)) ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const cash = n => n == null ? '—' : `$${fmt(n)}`;
@@ -18,6 +19,7 @@ const time = (seconds, includeSeconds = false) => new Date(seconds * 1000).toLoc
 const roundName = seconds => `${time(seconds)} – ${time(seconds + 300)}`;
 
 function App() {
+  if (location.pathname.startsWith('/gam')) return <GamMvPage/>;
   const paperPage=location.pathname.startsWith('/range');
   const rangeMode=true;
   const momentum=false;

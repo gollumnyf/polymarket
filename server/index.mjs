@@ -9,11 +9,13 @@ import {RangeEngine} from './range-engine.mjs';
 import {RangeLiveEngine} from './range-live-engine.mjs';
 import {RangeStore} from './range-store.mjs';
 import {paperReport} from './reports.mjs';
+import {GamMvEngine} from './gam-mv-engine.mjs';
 
-export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,allowedModes=['paper','live'] } = {}) {
+export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,gamEngine=null,allowedModes=['paper','live'] } = {}) {
   const app = express();
   app.disable('x-powered-by');
   if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,allowedModes:['paper']}));
+  if(gamEngine)app.use('/gam',createApp(gamEngine,{onShutdown,allowedModes:['paper']}));
   const token = randomBytes(32).toString('hex');
   const service={name:'polymarket-btc-console',root:resolve(fileURLToPath(new URL('../',import.meta.url))),pid:process.pid,instanceId:randomBytes(12).toString('hex'),shutdownEnabled:typeof onShutdown==='function'};
   app.use((req, res, next) => {
@@ -165,12 +167,15 @@ async function main() {
   const store = new RangeStore(resolve(root, 'data/trading.sqlite'));
   const venue = new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const rangeStore=new RangeStore(resolve(root,'data/range.sqlite'));
+  const gamStore=new RangeStore(resolve(root,'data/gam-mv.sqlite'));
   rangeStore.seedFrom([store]);
   const rangeVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const rangeEngine=new RangeEngine(rangeStore,rangeVenue);
+  const gamVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
+  const gamEngine=new GamMvEngine(gamStore,gamVenue);
   const engine=new RangeLiveEngine(store,venue,rangeEngine);
-  const engines=[rangeEngine,engine];
-  const app = createApp(engine,{onShutdown:close,rangeEngine,allowedModes:['live']});
+  const engines=[rangeEngine,engine,gamEngine];
+  const app = createApp(engine,{onShutdown:close,rangeEngine,gamEngine,allowedModes:['live']});
   const production = process.argv.includes('--production');
   let vite;
   if (production) {
@@ -195,7 +200,7 @@ async function main() {
   async function close() {
     if (closing) return; closing = true;for(const current of engines)current.closing=true;
     clearInterval(timer);
-    venue.close();rangeVenue.close();
+    venue.close();rangeVenue.close();gamVenue.close();
     for(const current of engines)for(const mode of current.modes)current.stop(mode);
     server.close(); server.closeAllConnections();
     if (vite) await vite.close();
@@ -203,7 +208,7 @@ async function main() {
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
     while (engines.some(current=>current.busy||current.entryBusy||current.spotTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
-    store.close();rangeStore.close();process.exit(0);
+    store.close();rangeStore.close();gamStore.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);
 }
