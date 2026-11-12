@@ -275,7 +275,12 @@ export class Store {
     return decode(this.db.prepare('SELECT * FROM round_predictions WHERE round=?').get(round),ROUND_PREDICTION) || null;
   }
   saveRoundPrediction(prediction) {
-    this.write('round_predictions',encode(prediction,ROUND_PREDICTION),['round'],false);
+    const previous=this.roundPrediction(prediction.round);
+    const upgrade=previous?.source==='polymarket_last_available'&&previous.conditionId===prediction.conditionId&&
+      (previous.oracleWindow==null||prediction.oracleWindow==null||previous.oracleWindow===prediction.oracleWindow)&&
+      (['polymarket_event_metadata','polymarket_crypto_price','polymarket_last_second'].includes(prediction.source)||
+        prediction.source==='polymarket_last_available'&&prediction.priceAt>previous.priceAt);
+    this.write('round_predictions',encode(prediction,ROUND_PREDICTION),['round'],!!upgrade);
     return this.roundPrediction(prediction.round);
   }
   roundOpening(round) {return decode(this.db.prepare('SELECT * FROM round_openings WHERE round=?').get(round),OPENING)||null;}
@@ -287,7 +292,11 @@ export class Store {
   saveRoundOpening(opening){this.write('round_openings',encode(opening,OPENING),['round'],false);return this.roundOpening(opening.round);}
   savePrediction(prediction) {
     const row=encode({...prediction,won:Number(prediction.won),matches:null},PREDICTION);
-    const result=this.write('order_predictions',row,['order_id'],false);
+    const previous=this.prediction(prediction.orderId);
+    const upgrade=previous?.source==='polymarket_last_available'&&previous.verifiedAt==null&&
+      (['polymarket_event_metadata','polymarket_crypto_price','polymarket_last_second'].includes(prediction.source)||
+        prediction.source==='polymarket_last_available'&&prediction.priceAt>previous.priceAt);
+    const result=this.write('order_predictions',row,['order_id'],!!upgrade);
     if (result.changes) {
       const order=this.db.prepare('SELECT mode FROM orders WHERE id=?').get(prediction.orderId);
       this.historyVersions[order.mode].orders++;
@@ -420,6 +429,11 @@ export class Store {
     if(oracleWindow!=null)this.db.prepare('UPDATE ticks SET oracle_window=? WHERE source=? AND time=? AND oracle_window IS NULL').run(oracleWindow,source,time);
   }
   lastSecondTick(round,oracleWindow){return this.db.prepare("SELECT time,price FROM ticks WHERE source='polymarket' AND oracle_window=? AND time>=? AND time<? ORDER BY time DESC LIMIT 1").get(oracleWindow,(round+299)*1000,(round+300)*1000)||null;}
+  closingTick(round,oracleWindow){
+    if(!Number.isFinite(round)||!Number.isFinite(oracleWindow))return null;
+    const tick=this.db.prepare("SELECT time,price FROM ticks WHERE source='polymarket' AND oracle_window=? AND time>=0 AND time<? AND typeof(price) IN ('real','integer') AND price>0 AND price<1e308 ORDER BY time DESC LIMIT 1").get(oracleWindow,(round+300)*1000);
+    return tick?{...tick,source:tick.time>=(round+299)*1000?'polymarket_last_second':'polymarket_last_available'}:null;
+  }
   ticks(since = Date.now() - 7200000) { return this.db.prepare("SELECT time,price FROM ticks WHERE source='polymarket' AND time>=? ORDER BY time").all(since); }
   firstOracleTick(round, targetSeconds = DEFAULT_CONFIG.entryDelay) {
     return this.db.prepare("SELECT time,price FROM ticks WHERE source='polymarket' AND time>=? AND time<=? ORDER BY time LIMIT 1")

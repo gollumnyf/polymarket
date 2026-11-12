@@ -191,8 +191,8 @@ export class Engine extends EventEmitter {
     if(saved)return `场次 #${round} 已保存预计 ${saved.outcome}，该订单的预测记录尚未同步`;
     const opening=this.store.roundOpening(round)||(['current_round_open','current_round_reverse'].includes(order?.signalRule)?{open:order.referencePrice,oracleWindow:order.oracleWindow}:null);
     const reference=Number.isFinite(opening?.open)&&opening.open>0?`本地起始价 ${opening.open.toFixed(6)}`:'本地缺少该场起始价';
-    const tick=Number.isFinite(opening?.oracleWindow)?this.store.lastSecondTick(round,opening.oracleWindow):null;
-    const sample=tick?`末秒采样已保存 ${tick.price.toFixed(6)}，等待预测写入`:Number.isFinite(opening?.oracleWindow)?`未采到该场结束前最后 1 秒的同源报价（窗口 ${opening.oracleWindow}s）`:'缺少已核实的预言机窗口，不能选择末秒报价';
+    const tick=Number.isFinite(opening?.oracleWindow)?this.store.closingTick(round,opening.oracleWindow):null;
+    const sample=tick?`收盘前最近同源采样已保存 ${tick.price.toFixed(6)}，距收盘 ${((round+300)*1000-tick.time)/1000} 秒，等待预测写入`:Number.isFinite(opening?.oracleWindow)?`已向前追溯，本地仍无该场收盘前的有效同源报价（窗口 ${opening.oracleWindow}s）`:'缺少已核实的预言机窗口，不能选择历史报价';
     return `场次 #${round} 未保存预计结果；${this.roundPredictionTasks.has(round)?'起止价接口请求进行中':'接口起止价结果尚未保存'}；${reference}；${sample}`;
   }
   async attempt(mode) {
@@ -219,6 +219,12 @@ export class Engine extends EventEmitter {
     if(unconfirmed){this.blockEntry(mode,start,`订单成交结果待确认：场次 #${unconfirmed.round}，订单 ${unconfirmed.id}，状态 ${unconfirmed.status}；确认前禁止新增买入`,{code:'ORDER_UNCONFIRMED',relatedRound:unconfirmed.round});return;}
     const holding=pending.find(o=>o.end*1000>this.now());
     if(holding){this.blockEntry(mode,start,`本场持仓中：场次 #${holding.round} 的订单尚未结束，距离结束 ${(holding.end-this.now()/1000).toFixed(3)} 秒`,{code:'POSITION_NOT_ENDED',relatedRound:holding.round});return;}
+    for(const order of pending){
+      if(order.prediction||this.isPreviousStakeCycle(order,account))continue;
+      const prices=this.store.roundPrediction(order.round)||this.lastSecondPrediction(order.round,order);
+      if(!prices||prices.conditionId!==order.conditionId||order.oracleWindow!=null&&prices.oracleWindow!=null&&order.oracleWindow!==prices.oracleWindow)continue;
+      this.store.saveRoundPrediction(prices);this.applyOrderPrediction(order,prices);order.prediction=this.store.prediction(order.id);
+    }
     const missing=pending.find(o=>!o.prediction&&!this.isPreviousStakeCycle(o,account));
     if(missing){this.blockEntry(mode,start,`等待上一场起止价预测：${this.predictionWaitReason(missing.round,missing)}`,{code:'ORDER_PREDICTION_MISSING',relatedRound:missing.round});return;}
     const follow=account.config.followPreviousAtOpen;
@@ -326,27 +332,31 @@ export class Engine extends EventEmitter {
     if(!opening&&['current_round_open','current_round_reverse'].includes(order?.signalRule)&&Number.isFinite(order.referencePrice)&&Number.isFinite(order.oracleWindow))
       opening={round,conditionId:order.conditionId,open:order.referencePrice,oracleWindow:order.oracleWindow};
     if(!opening)return null;
-    const tick=this.store.lastSecondTick(round,opening.oracleWindow);
-    return tick?roundPredictionFromPrices(round,{...opening,close:tick.price,priceAt:tick.time,source:'polymarket_last_second'},this.now()):null;
+    const tick=this.store.closingTick(round,opening.oracleWindow);
+    return tick?roundPredictionFromPrices(round,{...opening,close:tick.price,priceAt:tick.time,source:tick.source},this.now()):null;
   }
   applyOrderPrediction(order,prices){
-    if(order?.status!=='open'||order.prediction||this.now()<order.end*1000)return;
+    if(order?.status!=='open'||order.prediction&&order.prediction.source!=='polymarket_last_available'||this.now()<order.end*1000)return;
     const prediction=predictionFromPrices(order,prices,this.now());if(!prediction)return;
     const before=this.projectAccount(this.store.account(order.mode),this.store.pending(order.mode)).amountLimitResets;
-    this.store.savePrediction(prediction);
+    const stored=this.store.savePrediction(prediction);
+    if(order.prediction&&stored.source===order.prediction.source&&stored.priceAt===order.prediction.priceAt&&stored.close===order.prediction.close)return;
     const after=this.projectAccount(this.store.account(order.mode),this.store.pending(order.mode)).amountLimitResets;
-    this.log(order.mode,'info',`场次 #${order.round} 预计${prediction.won?'获胜':'失利'}：起始 ${prediction.open} → ${prediction.source==='polymarket_last_second'?'同源末秒价':'平台终止价'} ${prediction.close}；资金序列按预计结果继续`);
+    this.log(order.mode,'info',`场次 #${order.round} 预计${prediction.won?'获胜':'失利'}：起始 ${prediction.open} → ${prediction.source==='polymarket_last_second'?'同源末秒价':prediction.source==='polymarket_last_available'?'向前追溯同源报价':'平台终止价'} ${prediction.close}${prediction.source==='polymarket_last_available'?`（采样 ${new Date(prediction.priceAt).toISOString()}，距收盘 ${(order.end*1000-prediction.priceAt)/1000} 秒）`:''}${order.prediction?'；已更新之前的追溯预测':''}；资金序列按预计结果继续`);
     if(after>before)this.log(order.mode,'info',`预计下一笔超过单笔上限，恢复首笔 ${this.store.account(order.mode).config.baseAmount.toFixed(2)} 开始新轮`);
   }
   async getRoundPrediction(round,order=null) {
     let saved=this.store.roundPrediction(round);
-    if (!saved && this.venue.roundPrices) {
+    if ((!saved||saved.source==='polymarket_last_available') && this.venue.roundPrices) {
       if (!this.roundPredictionTasks.has(round)&&this.now()>=(this.roundPredictionRetryAt.get(round)||0)) {
         const task=(async()=>{
           const prices=await this.venue.roundPrices(order || {round,end:round+300});
           if (this.closing) return null;
           const prediction=roundPredictionFromPrices(round,prices,this.now());
-          return prediction ? this.store.saveRoundPrediction(prediction) : this.store.roundPrediction(round);
+          this.roundPredictionRetryAt.set(round,this.now()+5000);
+          const result=prediction?this.store.saveRoundPrediction(prediction):this.store.roundPrediction(round);
+          if(result)for(const pending of this.store.pending().filter(item=>item.round===round&&item.conditionId===result.conditionId&&(item.oracleWindow==null||result.oracleWindow==null||item.oracleWindow===result.oracleWindow)))this.applyOrderPrediction(pending,result);
+          return result;
         })().catch(error=>{
           if(!this.closing){this.roundPredictionRetryAt.set(round,this.now()+(/429/.test(String(error.message))?15000:5000));this.runtimeIssue('system',`场次预测接口暂不可用，下次自动重试：${safeError(error)}`);}
           try{return this.closing?null:this.store.roundPrediction(round);}catch{return null;}
@@ -354,7 +364,7 @@ export class Engine extends EventEmitter {
         this.roundPredictionTasks.set(round,task);
       }
     }
-    if(!saved){const fallback=this.lastSecondPrediction(round,order);if(fallback)saved=this.store.saveRoundPrediction(fallback);}
+    if(!saved||saved.source==='polymarket_last_available'){const fallback=this.lastSecondPrediction(round,order);if(fallback)saved=this.store.saveRoundPrediction(fallback);}
     if(!saved&&this.roundPredictionTasks.has(round))saved=await this.roundPredictionTasks.get(round);
     if (saved && order && (saved.conditionId !== order.conditionId ||
       (order.oracleWindow != null && saved.oracleWindow != null && order.oracleWindow !== saved.oracleWindow)))
@@ -369,7 +379,7 @@ export class Engine extends EventEmitter {
   async refreshPredictions() {
     const groups=new Map();
     for (const order of this.store.pending()) {
-      if (order.status !== 'open' || order.prediction || this.now()<order.end*1000) continue;
+      if (order.status !== 'open' || order.prediction&&order.prediction.source!=='polymarket_last_available' || this.now()<order.end*1000) continue;
       const key=`${order.round}:${order.conditionId}:${order.oracleWindow}`;
       if (!groups.has(key)) groups.set(key,[]);
       groups.get(key).push(order);
@@ -380,7 +390,7 @@ export class Engine extends EventEmitter {
         if (this.closing) return;
         for (const item of orders) {
           const order=this.store.order(item.id);
-          if (order?.status !== 'open' || order.prediction) continue;
+          if (order?.status !== 'open' || order.prediction&&order.prediction.source!=='polymarket_last_available') continue;
           this.applyOrderPrediction(order,prices);
         }
       } catch (error) { this.log('system','warning',`场次预测价格暂不可用：${safeError(error)}`); }

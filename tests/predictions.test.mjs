@@ -34,3 +34,12 @@ test('last-second fallback accepts only actual same-round closing-second timesta
   assert.equal(predictionFromPrices(order,{...last,priceAt:order.end*1000-1001},order.end*1000),null);
   assert.equal(predictionFromPrices(order,{...last,priceAt:null},order.end*1000),null);
 });
+
+
+test('earlier-sample predictions accept older same-window evidence and reject missing windows or future timestamps',()=>{
+  for(const priceAt of [order.end*1000-1001,order.round*1000-2000]){
+    const sample={...prices,source:'polymarket_last_available',oracleWindow:60,priceAt};
+    assert.equal(predictionFromPrices(order,sample,order.end*1000).priceAt,priceAt);
+    for(const patch of [{oracleWindow:null},{priceAt:null},{priceAt:-1},{priceAt:order.end*1000}])assert.equal(predictionFromPrices(order,{...sample,...patch},order.end*1000),null);
+  }
+});

@@ -297,3 +297,16 @@ test('order times include seconds and unresolved, rejected and legacy terminal o
   assert.equal(settlementPlaceholder({status:'rejected'}),'未成交');
   assert.equal(settlementPlaceholder({status:'won'}),'未记录');
 });
+
+
+test('closing tick backtracking finds valid historical prices without mixing windows, sources or post-close samples',t=>{
+  const store=new Store(':memory:');t.after(()=>store.close());const round=1800000000;
+  assert.equal(store.closingTick(round,60),null);
+  store.tick((round-600)*1000,90,'polymarket',60);store.tick((round+298)*1000,99,'polymarket',60);
+  store.tick((round+299)*1000,103,'binance',60);store.tick((round+299)*1000+100,104,'polymarket',30);
+  store.tick((round+299)*1000+200,0,'polymarket',60);store.tick((round+300)*1000,200,'polymarket',60);
+  assert.deepEqual(store.closingTick(round,60),{time:(round+298)*1000,price:99,source:'polymarket_last_available'});
+  store.tick((round+299)*1000+300,101,'polymarket',60);
+  assert.equal(store.closingTick(round,60).source,'polymarket_last_second');assert.equal(store.closingTick(round,60).price,101);
+  assert.equal(store.closingTick(round,null),null);
+});

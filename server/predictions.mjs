@@ -2,6 +2,7 @@ import { money,resetAtAmountLimit } from './strategy.mjs';
 
 function validPriceSource(round,prices){
   return ['polymarket_event_metadata','polymarket_crypto_price'].includes(prices.source)||
+    (prices.source==='polymarket_last_available'&&Number.isFinite(prices.oracleWindow)&&Number.isFinite(prices.priceAt)&&prices.priceAt>=0&&prices.priceAt<(round+299)*1000)||
     (prices.source==='polymarket_last_second'&&Number.isFinite(prices.priceAt)&&prices.priceAt>=(round+299)*1000&&prices.priceAt<(round+300)*1000);
 }
 

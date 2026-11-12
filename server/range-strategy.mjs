@@ -1,4 +1,4 @@
-export const RANGE_DEFAULTS=Object.freeze({lookbackHours:2,levelLookbackHours:4,levelLagMinutes:15,edgePercent:20,breakoutPercent:0.1,breakoutRounds:2});
+export const RANGE_DEFAULTS=Object.freeze({lookbackHours:2,levelLookbackHours:4,levelLagMinutes:15,edgePercent:20,resumeRounds:2,executionMaxPrice:0.55,breakoutPercent:0.1,breakoutRounds:2});
 export const RANGE_BUCKET_MS=5000;
 // Body candles need endpoints, not continuous intermediate RTDS samples.
 export const LEVEL_CANDLE_MS=5*60000;
@@ -60,6 +60,8 @@ export function analyzeLevels(bars,config,now,officialRounds=[]){
 export function validateRangeConfig(input={}){
   for(const key of Object.keys(input))if(!Object.hasOwn(RANGE_DEFAULTS,key))throw Error(`不支持的区间参数：${key}`);
   const config={...RANGE_DEFAULTS,...input};
+  if(!Number.isInteger(config.resumeRounds)||config.resumeRounds<1||config.resumeRounds>48)throw Error('恢复下单确认场数必须是 1 到 48 的整数');
+  if(!Number.isFinite(config.executionMaxPrice)||config.executionMaxPrice<0.5||config.executionMaxPrice>0.99)throw Error('成交价格上限必须为 0.50 到 0.99 之间的数字');
   if(!Number.isFinite(config.edgePercent)||config.edgePercent<0||config.edgePercent>=50)throw Error('每侧边界比例必须大于等于 0 且小于 50%');
   if(!Number.isInteger(config.lookbackHours)||config.lookbackHours<1||config.lookbackHours>24)throw Error('方向统计小时数必须是 1 到 24 的整数');
   if(!Number.isInteger(config.levelLookbackHours)||config.levelLookbackHours<1||config.levelLookbackHours>24)throw Error('历史区间小时数必须是 1 到 24 的整数');
@@ -93,12 +95,12 @@ export function rangeBoundary(state,price){
   const side=price<=middleLower?'lower':price>=middleUpper?'upper':null;
   const position=price<lower?'已跌破下支撑位':price>upper?'已上穿上压力位':side==='lower'?`已进入下侧 ${edgePercent}% 边界区域`:`已进入上侧 ${edgePercent}% 边界区域`;
   return {paused:!!side,side,edgePercent,middlePercent,lower,upper,middleLower,middleUpper,code:side?'RANGE_BOUNDARY_WAIT':null,
-    message:side?`${position}，暂停新单：当前价 ${price.toFixed(2)} ${side==='lower'?'≤':'≥'} ${side==='lower'?middleLower.toFixed(2):middleUpper.toFixed(2)}；参考支撑 ${lower.toFixed(2)} / 压力 ${upper.toFixed(2)}。等待价格 > ${middleLower.toFixed(2)} 且 < ${middleUpper.toFixed(2)}，回到中间 ${middlePercent}% 后买 ${side==='lower'?'UP':'DOWN'}，并沿用原资金序列；已有订单继续结算`:null};
+    message:side?`${position}，暂停新单：当前价 ${price.toFixed(2)} ${side==='lower'?'≤':'≥'} ${side==='lower'?middleLower.toFixed(2):middleUpper.toFixed(2)}；参考支撑 ${lower.toFixed(2)} / 压力 ${upper.toFixed(2)}。等待价格 > ${middleLower.toFixed(2)} 且 < ${middleUpper.toFixed(2)}，连续 ${state.resumeRounds??RANGE_DEFAULTS.resumeRounds} 场收盘回到中间 ${middlePercent}% 且当前仍在中部后买 ${side==='lower'?'UP':'DOWN'}，并沿用原资金序列；已有订单继续结算`:null};
 }
 
 export function stableRange(bars,config,now,levelHistory=bars,price=null,officialRounds=[]){
   const levels=analyzeLevels(levelHistory,config,now,officialRounds);
-  const base={edgePercent:config.edgePercent??RANGE_DEFAULTS.edgePercent,breakoutPercent:config.breakoutPercent??0.1,breakoutRounds:config.breakoutRounds??2,start:levels.start,end:levels.end,expected:config.levelLookbackHours*12,received:levels.candles.reduce((n,bar)=>n+bar.received,0),
+  const base={resumeRounds:config.resumeRounds??RANGE_DEFAULTS.resumeRounds,executionMaxPrice:config.executionMaxPrice??RANGE_DEFAULTS.executionMaxPrice,edgePercent:config.edgePercent??RANGE_DEFAULTS.edgePercent,breakoutPercent:config.breakoutPercent??0.1,breakoutRounds:config.breakoutRounds??2,start:levels.start,end:levels.end,expected:config.levelLookbackHours*12,received:levels.candles.reduce((n,bar)=>n+bar.received,0),
     levelAnalysis:levels,lower:levels.lower,upper:levels.upper,actualLower:levels.lower,actualUpper:levels.upper,widthPercent:levels.widthPercent,
     maxGapMs:levels.maxGapMs,supportSource:'rolling_extremes',resistanceSource:'rolling_extremes',stable:false,breakoutReady:levels.ready,
     code:levels.code,message:levels.message,blockingReasons:levels.ready?[]:[{code:levels.code,message:levels.message}]};
@@ -110,7 +112,7 @@ export function rangeRegime(previous,candidate,vote,spot,configId,now){
   if(!candidate.levelAnalysis.ready)return null;
   const prior=previous&&previous.configId===configId&&previous.oracleWindow===spot.windowSeconds&&previous.supportSource==='rolling_extremes'?previous:null;
   const round=Math.floor(now/300000)*300,percent=candidate.breakoutPercent??0.1,required=candidate.breakoutRounds??2;
-  let state={...prior,edgePercent:candidate.edgePercent??RANGE_DEFAULTS.edgePercent,configId,oracleWindow:spot.windowSeconds,levelTimeframeMinutes:candidate.levelAnalysis.timeframeMinutes,levelLookbackHours:candidate.levelAnalysis.lookbackHours,levelLagMinutes:candidate.levelAnalysis.lagMinutes??0,levelWindowStart:candidate.levelAnalysis.start,levelWindowEnd:candidate.levelAnalysis.end,
+  let state={...prior,resumeRounds:candidate.resumeRounds??RANGE_DEFAULTS.resumeRounds,executionMaxPrice:candidate.executionMaxPrice??RANGE_DEFAULTS.executionMaxPrice,edgePercent:candidate.edgePercent??RANGE_DEFAULTS.edgePercent,configId,oracleWindow:spot.windowSeconds,levelTimeframeMinutes:candidate.levelAnalysis.timeframeMinutes,levelLookbackHours:candidate.levelAnalysis.lookbackHours,levelLagMinutes:candidate.levelAnalysis.lagMinutes??0,levelWindowStart:candidate.levelAnalysis.start,levelWindowEnd:candidate.levelAnalysis.end,
     lower:candidate.lower,upper:candidate.upper,actualLower:candidate.lower,actualUpper:candidate.upper,widthPercent:candidate.widthPercent,
     supportSource:'rolling_extremes',resistanceSource:'rolling_extremes',supportTouches:0,resistanceTouches:0,roundTrips:0,
     phase:prior?.phase??'range',formedAt:prior?.formedAt??now,changedAt:prior?.changedAt??now,windowStart:candidate.start,windowEnd:candidate.end,
@@ -164,16 +166,29 @@ export function rangeRegime(previous,candidate,vote,spot,configId,now){
   return finish();
   function finish(){
     const boundary=rangeBoundary(state,spot.price);
-    if(boundary.side){
-      // Remember the latest side, including a jump across the entire middle.
-      if(state.boundaryPauseSide!==boundary.side)state.boundaryPausedAt=now;
-      state.boundaryPauseSide=boundary.side;
-    }else if(!boundary.paused&&state.boundaryPauseSide){
-      const side=state.boundaryPauseSide,direction=side==='lower'?'UP':'DOWN';
-      Object.assign(state,{boundaryPauseSide:null,boundaryResumeSide:side,boundaryResumedAt:now,
-        boundaryResumePrice:spot.price,boundaryResumeThreshold:side==='lower'?boundary.middleLower:boundary.middleUpper,
-        direction,rangeBaseDirection:direction,rangeBaseDirectionRule:'boundary_return',lockedDirectionRule:'boundary_return',
-        lockedPreviousRound:null,lockedPreviousDirection:null,lockedPreviousSource:null,directionSelectedAt:now});
+    if(boundary.side&&state.boundaryPauseSide!==boundary.side){
+      Object.assign(state,{boundaryPauseSide:boundary.side,boundaryPausedAt:now,boundaryPauseRound:round,boundaryConfirmCount:0,
+        boundaryConfirmLastRound:null,boundaryConfirmLastClose:null,boundaryConfirmLastSource:null});
+    }
+    if(state.boundaryPauseSide){
+      state.boundaryPauseRound??=round;
+      Object.assign(state,{boundaryConfirmCount:0,boundaryConfirmLastRound:null,boundaryConfirmLastClose:null,boundaryConfirmLastSource:null,
+        boundaryConfirmLower:boundary.middleLower??null,boundaryConfirmUpper:boundary.middleUpper??null});
+      // Recheck the latest consecutive closed rounds against the displayed blue area.
+      for(let closed=state.boundaryPauseRound;closed<round;closed+=300){
+        const evidence=candidate.completedRounds?.find(item=>item.round===closed);
+        if(!evidence||evidence.invalid||!Number.isFinite(evidence.close)||evidence.close<=boundary.middleLower||evidence.close>=boundary.middleUpper){
+          state.boundaryConfirmCount=0;state.boundaryConfirmLastRound=null;state.boundaryConfirmLastClose=null;state.boundaryConfirmLastSource=null;continue;
+        }
+        state.boundaryConfirmCount++;state.boundaryConfirmLastRound=closed;state.boundaryConfirmLastClose=evidence.close;state.boundaryConfirmLastSource=evidence.source;
+      }
+      if(!boundary.paused&&state.boundaryConfirmCount>=state.resumeRounds){
+        const side=state.boundaryPauseSide,direction=side==='lower'?'UP':'DOWN';
+        Object.assign(state,{boundaryPauseSide:null,boundaryResumeSide:side,boundaryResumedAt:now,
+          boundaryResumePrice:spot.price,boundaryResumeThreshold:side==='lower'?boundary.middleLower:boundary.middleUpper,
+          direction,rangeBaseDirection:direction,rangeBaseDirectionRule:'boundary_return',lockedDirectionRule:'boundary_return',
+          lockedPreviousRound:null,lockedPreviousDirection:null,lockedPreviousSource:null,directionSelectedAt:now});
+      }
     }
     if(!prior||Object.keys(state).some(key=>!['id','changedAt'].includes(key)&&state[key]!==prior[key]))state.changedAt=now;
     return state;

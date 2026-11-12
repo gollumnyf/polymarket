@@ -70,10 +70,10 @@ export class RangeEngine extends MomentumEngine {
     if(valid(official?.open)&&valid(official?.close))return prices(official.open,official.close,'polymarket_crypto_price',official.fetchedAt);
     const prediction=this.store.roundPrediction(round);
     if(prediction&&Number.isFinite(window)&&prediction.oracleWindow===window&&valid(prediction.open)&&valid(prediction.close)&&
-      ['polymarket_event_metadata','polymarket_crypto_price','polymarket_last_second'].includes(prediction.source))
+      ['polymarket_event_metadata','polymarket_crypto_price','polymarket_last_second','polymarket_last_available'].includes(prediction.source))
       return prices(prediction.open,prediction.close,prediction.source,prediction.observedAt);
-    const opening=this.store.roundOpening(round),tick=opening&&Number.isFinite(window)&&opening.oracleWindow===window?this.store.lastSecondTick(round,window):null;
-    if(valid(opening?.open)&&valid(tick?.price))return prices(opening.open,tick.price,'polymarket_last_second',tick.time);
+    const opening=this.store.roundOpening(round),tick=opening&&Number.isFinite(window)&&opening.oracleWindow===window?this.store.closingTick(round,window):null;
+    if(valid(opening?.open)&&valid(tick?.price))return prices(opening.open,tick.price,tick.source,tick.time);
     // The cached record is a market vote, never an order prediction.
     return cached||{round,outcome:null,source:'pending'};
   }
@@ -126,8 +126,9 @@ export class RangeEngine extends MomentumEngine {
     if(!Number.isFinite(spot.price)||spot.price<=0||!Number.isFinite(spot.at)||spot.at>now||now-spot.at>6000)return reject('RANGE_PRICE_STALE','当前官方报价无效或超过 6000 毫秒新鲜度上限，继续等待更新');
     const {config,candidate:analysisCandidate,vote}=this.analysis();
     const completedRounds=[];
-    if(previous?.breakoutStartRound!=null&&!previous.breakoutConfirmedAt){
-      for(let round=previous.breakoutStartRound;round<roundStart(now);round+=300){
+    const confirmationStart=Math.min(previous?.breakoutStartRound!=null&&!previous.breakoutConfirmedAt?previous.breakoutStartRound:Infinity,previous?.boundaryPauseSide?(previous.boundaryPauseRound??roundStart(now)):Infinity);
+    if(Number.isFinite(confirmationStart)){
+      for(let round=confirmationStart;round<roundStart(now);round+=300){
         const history=this.store.historicalRound(round),prediction=this.store.roundPrediction(round),storedVote=this.store.vote(round),official=this.store.marketPrices(spot.windowSeconds,round,round+300)[0];
         const valid=value=>Number.isFinite(value)&&value>0;
         let close=null,source=null;
@@ -136,7 +137,7 @@ export class RangeEngine extends MomentumEngine {
         else if(valid(official?.close)){close=official.close;source='polymarket_crypto_price';}
         else if(prediction?.oracleWindow===spot.windowSeconds&&valid(prediction.close)){close=prediction.close;source=prediction.source;}
         else if(valid(storedVote?.close)&&['official','polymarket_event_metadata','polymarket_crypto_price'].includes(storedVote.source)){close=storedVote.close;source=storedVote.source;}
-        else {const tick=this.store.lastSecondTick(round,spot.windowSeconds);if(tick){close=tick.price;source='polymarket_last_second';}}
+        else {const tick=this.store.closingTick(round,spot.windowSeconds);if(tick){close=tick.price;source=tick.source;}}
         if(!valid(close)){completedRounds.push({round,invalid:true});continue;}
         completedRounds.push({round,close,source});
       }
@@ -154,6 +155,7 @@ export class RangeEngine extends MomentumEngine {
     state=this.store.saveRangeState(state);
     const boundary=rangeBoundary(state,spot.price);
     if(boundary.paused)return {direction:null,code:boundary.code,message:boundary.message,state,candidate,vote,usingSavedRange,boundary};
+    if(state.boundaryPauseSide)return {direction:null,code:'RANGE_RETURN_CONFIRMING',message:`已返回蓝色区域，等待连续 ${config.resumeRounds} 场收盘确认：当前 ${state.boundaryConfirmCount}/${config.resumeRounds} 场；收盘须 > ${boundary.middleLower.toFixed(2)} 且 < ${boundary.middleUpper.toFixed(2)}，等于边界不计入。确认后从${state.boundaryPauseSide==='lower'?'下支撑侧买 UP':'上压力侧买 DOWN'}；下单前仍须位于蓝色区域`,state,candidate,vote,usingSavedRange,boundary};
     if(!state.direction&&vote.complete&&vote.up===vote.down)return {direction:null,code:'RANGE_TIE_PREVIOUS_UNAVAILABLE',
       message:`区间初次选向同票（UP ${vote.up} / DOWN ${vote.down}），上一场 #${vote.previousRound} ${vote.previousSource==='official_void'?'官方判定作废，没有涨跌方向':'尚无有效官方结果和预测方向'}，继续等待`,state,candidate,vote};
     if(!state.direction)return {direction:null,code:'RANGE_VOTE_INCOMPLETE',message:
@@ -162,7 +164,7 @@ export class RangeEngine extends MomentumEngine {
       `当前上一场 #${vote.previousRound}：${vote.previousDirection}（${vote.previousSource==='official'?'官方最终结果':'未结算，场次预计结果'}）`:
       `当前上一场 #${vote.previousRound}：${vote.previousSource==='official_void'?'官方作废，无涨跌方向':'正在获取场次预计结果'}`;
     const message=state.phase==='range'?
-      (state.lockedDirectionRule==='boundary_return'?`已从${state.boundaryResumeSide==='lower'?'下支撑侧向上':'上压力侧向下'}返回中间区域，锁定买 ${state.direction}；恢复时价格 ${state.boundaryResumePrice.toFixed(2)} ${state.boundaryResumeSide==='lower'?'>':'<'} 中部${state.boundaryResumeSide==='lower'?'下':'上'}沿 ${state.boundaryResumeThreshold.toFixed(2)}。中部持续沿用此方向，再次触及边界后重新按返回侧选向；马丁资金序列保留`:
+      (state.lockedDirectionRule==='boundary_return'?`已从${state.boundaryResumeSide==='lower'?'下支撑侧向上':'上压力侧向下'}返回中间区域，连续 ${state.boundaryConfirmCount} 场收盘确认完成，锁定买 ${state.direction}；恢复时价格 ${state.boundaryResumePrice.toFixed(2)} ${state.boundaryResumeSide==='lower'?'>':'<'} 中部${state.boundaryResumeSide==='lower'?'下':'上'}沿 ${state.boundaryResumeThreshold.toFixed(2)}。中部持续沿用此方向，再次触及边界后重新按返回侧选向；马丁资金序列保留`:
       state.lockedDirectionRule==='tie_reverse_previous'?`区间基础方向 ${state.direction}；首次选向时 UP ${state.upCount} / DOWN ${state.downCount} 同票，采用当时上一场 #${state.lockedPreviousRound} ${state.lockedPreviousDirection}（${state.lockedPreviousSource==='official'?'官方最终结果':'场次预计结果'}）的反方向。${previousResultText}；区间内继续沿用已锁定方向`:
       `价格位于历史区间，已锁定 ${state.direction}，选向时 UP ${state.upCount} / DOWN ${state.downCount}；每场开盘沿用。当前上界 ${state.actualUpper.toFixed(2)} / 下界 ${state.actualLower.toFixed(2)}，每场结束重算`):
       `已连续 ${state.breakoutCount} 场收盘${state.direction==='UP'?'上穿压力':'下破支撑'}并超过参考区间宽度的 ${config.breakoutPercent}%，突破确认买 ${state.direction}；从场次 #${state.tradeFromRound} 起执行，回到参考区间内重新按区间规则选向`;
@@ -190,11 +192,11 @@ export class RangeEngine extends MomentumEngine {
         tiePreviousSource:decision.state.lockedPreviousSource}};
   }
   quote(book,budget,config,schedule){
-    const valid=book.asks.map(level=>Number(level.price)).filter(price=>Number.isFinite(price)&&price>0&&price<1),best=Math.min(...valid);
-    if(Number.isFinite(best)&&best>=0.5)throw Object.assign(Error(`所选方向卖一 ${best.toFixed(6)} 不低于 0.500000；此策略严格要求买价 < 0.50，本次不买入`),{code:'RANGE_PRICE_NOT_BELOW_HALF',evidence:{budget,bestAsk:best,maxPrice:0.5}});
-    const tick=Number(book.tickSize);
-    const cap=Number.isFinite(tick)&&tick>0?(Math.ceil(0.5/tick-1e-10)-1)*tick:0.5;
-    const quote=simulateFill(book,budget,{...config,maxPrice:cap},schedule,{strictTicks:true});
+    const valid=book.asks.filter(level=>Number.isFinite(Number(level.size))&&Number(level.size)>0).map(level=>Number(level.price)).filter(price=>Number.isFinite(price)&&price>0&&price<1),best=Math.min(...valid);
+    if(Number.isFinite(best)&&best>=0.5)throw Object.assign(Error(`所选方向卖一 ${best.toFixed(6)} 不低于 0.500000；此策略要求触发卖一价 < 0.50，本次不买入`),{code:'RANGE_PRICE_NOT_BELOW_HALF',evidence:{budget,bestAsk:best,maxPrice:0.5}});
+    const tick=Number(book.tickSize),maximum=this.analysis().config.executionMaxPrice;
+    const cap=Number.isFinite(tick)&&tick>0?Math.min(maximum,Math.floor((maximum+1e-10)/tick)*tick):maximum;
+    const quote=simulateFill(book,budget,{...config,maxPrice:cap},schedule,{strictTicks:true,ignoreSlippage:true});
     return {...quote,priceLimit:Math.min(quote.priceLimit,cap)};
   }
   configure(mode,input){
@@ -203,7 +205,7 @@ export class RangeEngine extends MomentumEngine {
     if(account.running||this.store.pending(mode).length)throw Error('请暂停策略，并等待已有订单结算后修改参数');
     const {rangeConfig,...trading}=input;
     const config=validateConfig(trading);
-    if(config.entryDelay!==0||config.maxPrice!==0.5||config.sameDirectionOnly||config.followPreviousAtOpen||config.reverseSignal)throw Error('区间策略固定零延迟、区间/突破方向和买价严格低于 0.50');
+    if(config.entryDelay!==0||config.maxPrice!==0.5||config.sameDirectionOnly||config.followPreviousAtOpen||config.reverseSignal)throw Error('区间策略固定零延迟、区间/突破方向和触发卖一价低于 0.50');
     const requested=rangeConfig?validateRangeConfig(rangeConfig):null;
     const sharedChanged=config.entryWindow!==account.config.entryWindow||requested&&Object.keys(requested).some(key=>requested[key]!==this.store.rangeConfig()[key]);
     if(sharedChanged&&[...(this.followers||[])].some(engine=>engine.store.account('live').running||engine.store.pending('live').length))throw Error('实盘正在运行或有待结算订单，请先暂停实盘并等待结算后修改共用区间参数和检测时长');

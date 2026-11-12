@@ -169,3 +169,5 @@ npm.cmd run build    # 前端生产构建
 本次验证已成功只读连接真实行情、订单簿及历史官方结算；未配置真实钱包，因此未发送真实交易。浏览器自动验收因本机无法可靠识别当前网址而停止，前端已完成生产构建与 HTTP 路由检查，尚未完成视觉验收。
 
 官方参考：[TypeScript SDK](https://docs.polymarket.com/getting-started/typescript)、[订单流程](https://docs.polymarket.com/trading/quickstart)、[市场与手续费参数](https://docs.polymarket.com/market-data/market-details)、[手续费](https://docs.polymarket.com/trading/fees)。
+
+**收盘报价追溯预测**：起止价接口尚未返回且末秒没有采样时，向前查找 Polymarket 同预言机窗口中、严格早于该场收盘的最近有效报价；不再限定最后 1 秒。允许追溯至更早场次，保存原始采样时间，在日志与详情标明距收盘秒数，来源标记为追溯预测。下单检查可立即补齐预测并延续马丁序列；后续取得更近采样或官方起止价时更新追溯预测，已发出的订单不重复提交，真实盈亏仍由官方结算。

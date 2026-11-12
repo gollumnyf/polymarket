@@ -126,7 +126,7 @@ test('history shows last-second evidence while pending, then replaces display pr
   assert.equal(store.orderCount('paper'),0);
 });
 
-test('historical fallback uses archived signal reference only with an unambiguous oracle window and a tick strictly inside the last second',t=>{
+test('historical fallback searches before the closing second using an unambiguous oracle window',t=>{
   const store=new Store(':memory:');t.after(()=>store.close());
   const round=1799999700,now=(round+310)*1000;
   store.saveInitialSignal({round,targetSeconds:5,observedAt:(round+5)*1000,referencePrice:100,price:101,
@@ -138,7 +138,7 @@ test('historical fallback uses archived signal reference only with an unambiguou
   store.tick((round+299)*1000+200,99,'polymarket');
   const history=new RoundHistory({}, {store,now:()=>now});
   let item=history.snapshot().items.at(-1);
-  assert.equal(item.close,null);assert.equal(item.forecast,null);
+  assert.equal(item.close,99);assert.equal(item.closeSource,'polymarket_last_available');assert.equal(item.closeAt,(round+298)*1000);
   store.tick((round+299)*1000+300,101,'polymarket',60);
   item=history.snapshot().items.at(-1);
   assert.equal(item.open,100);assert.equal(item.close,101);assert.equal(item.forecast.outcome,'UP');

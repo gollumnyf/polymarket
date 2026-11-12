@@ -199,13 +199,13 @@ test('stalled price APIs and spot polling do not delay last-second prediction an
   assert.equal(store.roundPrediction(start).outcome,'DOWN');assert.equal(store.orders('paper')[1].prediction.won,false);
 });
 
-test('last-second selection excludes other windows, exchanges, older ticks and next-round prices',async t=>{
+test('closing prediction searches older ticks but excludes other windows, exchanges and next-round prices',async t=>{
   const {engine,store,venue,start}=setup(t);enableAlignment(store,start,null);
   store.saveRoundOpening({round:start-300,conditionId:'prev',open:100,oracleWindow:60,observedAt:(start-300)*1000});
   store.tick(start*1000-1001,99,'polymarket',60);store.tick(start*1000,200,'polymarket',60);
   store.tick(start*1000-500,99,'binance',60);store.tick(start*1000-400,99,'polymarket',30);
   venue.roundPrices=async()=>null;
-  assert.equal(await engine.getRoundPrediction(start-300),null);
+  const fallback=await engine.getRoundPrediction(start-300);assert.equal(fallback.source,'polymarket_last_available');assert.equal(fallback.close,99);assert.equal(fallback.priceAt,start*1000-1001);
   store.tick(start*1000-300,101,'polymarket',60);
   assert.equal((await engine.getRoundPrediction(start-300)).outcome,'UP');
 });
@@ -698,4 +698,36 @@ test('rejected background forecasts are logged and retried without ending the ru
   engine.pollPredictions();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(calls,2);assert.equal(store.account('paper').running,true);
   assert.ok(store.logs('paper').some(log=>log.message.includes('temporary prediction read error')));
+});
+
+
+test('the opening entry immediately backtracks a missing closing second and official prices later upgrade the forecast without duplicating orders',async t=>{
+  const {engine,store,venue,start,setNow,fresh}=setup(t);
+  engine.configure('paper',{...store.account('paper').config,entryDelay:0});await engine.start('paper');await engine.attempt('paper');
+  const old=store.orderForRound('paper',start);
+  store.saveRoundOpening({round:start,conditionId:'condition',open:100,oracleWindow:60,observedAt:start*1000});
+  store.tick((start+298)*1000,99,'polymarket',60);
+  store.tick((start+299)*1000,200,'polymarket',30);store.tick((start+299)*1000+100,200,'binance',60);
+  store.tick((start+300)*1000,200,'polymarket',60);
+  let release;venue.roundPrices=()=>new Promise(resolve=>{release=resolve;});
+  setNow((start+300)*1000+193);fresh();
+  const refresh=engine.refreshPredictions();await engine.attempt('paper');await refresh;
+  const second=store.orderForRound('paper',start+300);assert.equal(second.budget,10);
+  assert.equal(store.order(old.id).prediction.source,'polymarket_last_available');assert.equal(store.order(old.id).prediction.close,99);
+  assert.equal(store.order(old.id).prediction.priceAt,(start+298)*1000);assert.equal(store.account('paper').pnl,0);
+  const tasks=[...engine.roundPredictionTasks.values()];release({round:start,conditionId:'condition',open:100,close:101,oracleWindow:60,source:'polymarket_event_metadata'});await Promise.all(tasks);
+  assert.equal(store.roundPrediction(start).source,'polymarket_event_metadata');assert.equal(store.order(old.id).prediction.won,true);
+  await engine.attempt('paper');assert.equal(store.orderCount('paper'),2);assert.equal(store.order(second.id).budget,10);
+  assert.equal(store.account('paper').pnl,0);assert.equal(store.account('paper').settled,0);
+});
+
+test('backtracking keeps searching beyond the prior round and retries an unavailable endpoint without blocking saved forecasts',async t=>{
+  const {engine,store,venue,start,setNow}=setup(t);
+  store.saveRoundOpening({round:start-300,conditionId:'prev',open:100,oracleWindow:60,observedAt:(start-300)*1000});
+  store.tick((start-601)*1000,98,'polymarket',60);store.tick(start*1000-1,0,'polymarket',60);
+  let calls=0;venue.roundPrices=async()=>{calls++;if(calls===1)throw Error('temporary offline');return {round:start-300,conditionId:'prev',open:100,close:102,oracleWindow:60,source:'polymarket_crypto_price'};};
+  const prediction=await engine.getRoundPrediction(start-300);await Promise.all([...engine.roundPredictionTasks.values()]);
+  assert.equal(prediction.close,98);assert.equal(prediction.priceAt,(start-601)*1000);assert.equal(prediction.source,'polymarket_last_available');
+  setNow((start+16)*1000);await engine.getRoundPrediction(start-300);await Promise.all([...engine.roundPredictionTasks.values()]);
+  assert.equal(calls,2);assert.equal(store.roundPrediction(start-300).outcome,'UP');
 });

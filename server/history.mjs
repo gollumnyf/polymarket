@@ -48,7 +48,7 @@ export function withHistoricalForecast(item,forecast) {
   const comparison=item.status==='resolved'?item.result:
     officialClose!=null&&open!=null?(officialClose>=open?'UP':'DOWN'):null;
   return {...item,open,close,change,changePercent:change!=null?change/open*100:null,
-    closeSource:officialClose!=null?'polymarket_event_metadata':forecast?'polymarket_last_second':null,
+    closeSource:officialClose!=null?'polymarket_event_metadata':forecast?forecast.source:null,
     closeAt:officialClose!=null?null:forecast?.priceAt??null,forecast:forecast||null,
     forecastComparison:comparison,
     forecastComparisonSource:['resolved','void'].includes(item.status)?'official_result':'platform_prices',
@@ -71,14 +71,13 @@ export class RoundHistory {
   lastSecondForecast(item) {
     if(!this.store||this.now()<item.end*1000)return null;
     const saved=this.store.roundPrediction(item.round);
-    if(saved?.source==='polymarket_last_second'&&Number.isFinite(saved.priceAt)&&
-      saved.priceAt>=(item.end-1)*1000&&saved.priceAt<item.end*1000)return saved;
+    if(['polymarket_last_second','polymarket_last_available'].includes(saved?.source)&&Number.isFinite(saved.priceAt)&&saved.priceAt<item.end*1000)return saved;
     const reference=this.store.roundOpening(item.round)||
       (saved&&Number.isFinite(saved.oracleWindow)?saved:null)||this.store.roundSignalReference(item.round);
     if(!reference||!Number.isFinite(reference.open)||reference.open<=0)return null;
-    const tick=this.store.lastSecondTick(item.round,reference.oracleWindow);
+    const tick=this.store.closingTick(item.round,reference.oracleWindow);
     return tick?{round:item.round,open:reference.open,close:tick.price,outcome:tick.price>=reference.open?'UP':'DOWN',
-      oracleWindow:reference.oracleWindow,source:'polymarket_last_second',priceAt:tick.time}:null;
+      oracleWindow:reference.oracleWindow,source:tick.source,priceAt:tick.time}:null;
   }
   snapshot(entryDelay = DEFAULT_CONFIG.entryDelay,followPreviousAtOpen=false,reverseSignal=false) {
     const items = this.starts().map(round => this.cache.get(round) || this.store?.historicalRound(round) || {

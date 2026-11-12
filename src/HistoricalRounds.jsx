@@ -85,7 +85,7 @@ export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5
 }
 
 export function HistoricalRoundDetails({active,mode='paper',entryDelay=5,followPreviousAtOpen=false,reverseSignal=false,momentum=false}) {
-  const estimated=active.closeSource==='polymarket_last_second';
+  const earlier=active.closeSource==='polymarket_last_available',estimated=earlier||active.closeSource==='polymarket_last_second';
   const expected=Number.isFinite(active.open)&&Number.isFinite(active.close)?(active.close>=active.open?'UP':'DOWN'):null;
   const comparisonLabel=active.status==='void'?'官方非二元兑付':active.forecastComparisonSource==='official_result'?'官方结果':'接口价格方向';
   return <><dl>
@@ -93,9 +93,9 @@ export function HistoricalRoundDetails({active,mode='paper',entryDelay=5,followP
         <div><dt>起始金额</dt><dd>{price(active.open)}</dd></div>
         <div><dt>终止金额{estimated?'（预测）':''}</dt><dd>{price(active.close)}</dd></div>
         <div><dt>变动金额</dt><dd className={active.change > 0 ? 'green' : active.change < 0 ? 'red' : ''}>{active.change == null ? '待公布' : `${active.change >= 0 ? '+' : '−'}${price(Math.abs(active.change))}`} {active.changePercent != null && <small>({active.changePercent >= 0 ? '+' : ''}{active.changePercent.toFixed(3)}%)</small>}</dd></div>
-        <div><dt>终止价来源</dt><dd>{estimated?<>Polymarket 同源末秒采样<br/>{sampleTime(active.closeAt)} · {active.forecast?.oracleWindow===0?'Chainlink':`TWAP ${active.forecast?.oracleWindow}s`}</>:active.closeSource==='polymarket_event_metadata'?'Polymarket 接口终止价':'待获取有效数据'}</dd></div>
+        <div><dt>终止价来源</dt><dd>{estimated?<>Polymarket 同源{earlier?'追溯':'末秒'}采样<br/>{sampleTime(active.closeAt)}{earlier&&<> · 距收盘 {Number(((active.end*1000-active.closeAt)/1000).toFixed(3))} 秒</>} · {active.forecast?.oracleWindow===0?'Chainlink':`TWAP ${active.forecast?.oracleWindow}s`}</>:active.closeSource==='polymarket_event_metadata'?'Polymarket 接口终止价':'待获取有效数据'}</dd></div>
         {!active.result&&active.status!=='void'&&expected&&<div><dt>预计方向</dt><dd className={expected==='UP'?'green':'red'}>{expected} · 待官方结算</dd></div>}
-        {active.forecast&&!estimated&&<div><dt>末秒预测记录</dt><dd>{active.forecast.outcome} · {price(active.forecast.close)}<br/>{sampleTime(active.forecast.priceAt)}</dd></div>}
+        {active.forecast&&!estimated&&<div><dt>{active.forecast.source==='polymarket_last_available'?'追溯预测记录':'末秒预测记录'}</dt><dd>{active.forecast.outcome} · {price(active.forecast.close)}<br/>{sampleTime(active.forecast.priceAt)}</dd></div>}
         {active.forecastMatches===true&&<div><dt>预测核对</dt><dd className="green">与{comparisonLabel}一致</dd></div>}
         <div><dt>{momentum?'实际买入信号':<>第 {entryDelay} 秒入场信号</>}</dt><dd className={active.initialSignal?.direction === 'UP' ? 'green' : active.initialSignal?.direction === 'DOWN' ? 'red' : ''}>{active.initialSignal ? active.initialSignal.direction || '持平' : '未记录'}</dd></div>
         {active.initialSignal && <div><dt>{followPreviousAtOpen?'上一场预测依据':'采样时刻 / 价格'}</dt><dd>{followPreviousAtOpen?sampleTime(active.initialSignal.observedAt):`第 ${((active.initialSignal.observedAt-active.round*1000)/1000).toFixed(1)} 秒`} · {price(active.initialSignal.price)}</dd></div>}
@@ -104,7 +104,7 @@ export function HistoricalRoundDetails({active,mode='paper',entryDelay=5,followP
         <div><dt>{mode === 'live' ? '实盘订单' : '模拟订单'}</dt><dd className={active.trade?.status === 'lost' ? 'red' : active.trade?.status === 'won' ? 'green' : ''}>{!active.trade ? '未参与' : `${active.trade.direction} · ${active.trade.status === 'won' ? '获胜' : active.trade.status === 'lost' ? '失利' : active.trade.status === 'rejected' ? '未成交' : '待确认 / 结算'}`}</dd></div>
       </dl>
       {!active.trade&&active.entryBlock&&<p className="round-entry-block"><strong>未买入原因</strong><span>{active.entryBlock.message}</span><small>记录时间 {sampleTime(active.entryBlock.at)}{active.entryBlock.evidenceAvailable?' · 检查依据已保存':' · 旧版依据不完整'}</small></p>}
-      {active.forecastMatches===false&&<p className="round-forecast-mismatch" role="status"><strong>末秒预测与{comparisonLabel}不一致</strong><span>预测 {active.forecast.outcome} → {active.status==='void'?'非二元兑付':active.forecastComparison}{active.forecastComparisonSource==='platform_prices'?' · 仍待官方结算':''}</span></p>}
-      {estimated&&<p className="round-forecast-note">末秒价格仅作预测，接口返回终止价后自动替换；最终方向以官方结算为准。</p>}
+      {active.forecastMatches===false&&<p className="round-forecast-mismatch" role="status"><strong>采样预测与{comparisonLabel}不一致</strong><span>预测 {active.forecast.outcome} → {active.status==='void'?'非二元兑付':active.forecastComparison}{active.forecastComparisonSource==='platform_prices'?' · 仍待官方结算':''}</span></p>}
+      {estimated&&<p className="round-forecast-note">同源采样价格仅作预测，接口返回终止价后自动替换；最终方向以官方结算为准。</p>}
     </>;
 }

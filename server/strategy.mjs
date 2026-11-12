@@ -66,7 +66,7 @@ export function feePerShare(price, schedule) {
 
 // The configured stake is the total budget, including taker fees. Walk the asks;
 // never assume infinite liquidity at the displayed best price.
-export function simulateFill(book, budget, config, schedule, {strictTicks=false}={}) {
+export function simulateFill(book, budget, config, schedule, {strictTicks=false,ignoreSlippage=false}={}) {
   let asks = book.asks.map(level => ({ price: Number(level.price), size: Number(level.size) }))
     .filter(l => l.price > 0 && l.price < 1 && Number.isFinite(l.size) && l.size > 0)
     .sort((a, b) => a.price - b.price);
@@ -81,9 +81,9 @@ export function simulateFill(book, budget, config, schedule, {strictTicks=false}
     const invalid=asks.find(level=>Math.abs(level.price/tick-Math.round(level.price/tick))>1e-8);
     if(invalid)reject('ASK_OFF_TICK',`官方卖盘价格不符合 tick：卖价 ${number(invalid.price)}，tickSize ${number(tick)}；本次不模拟成交，等待有效盘口`,{tickSize:tick});
   }
-  const slippageLimit=asks[0].price*(1+config.slippage/100),rawPriceLimit=Math.min(config.maxPrice,slippageLimit);
+  const slippageLimit=ignoreSlippage?config.maxPrice:asks[0].price*(1+config.slippage/100),rawPriceLimit=Math.min(config.maxPrice,slippageLimit);
   const priceLimit = Math.floor((rawPriceLimit + 1e-10) / tick) * tick;
-  const limitSource=config.maxPrice<slippageLimit?'max_price':config.maxPrice>slippageLimit?'slippage':'both';
+  const limitSource=ignoreSlippage?'execution_cap':config.maxPrice<slippageLimit?'max_price':config.maxPrice>slippageLimit?'slippage':'both';
   Object.assign(evidence,{tickSize:tick,slippageLimit,rawPriceLimit,priceLimit:money(priceLimit),limitSource});
   if(asks[0].price>config.maxPrice+(strictTicks?0:1e-10))
     reject('MAX_PRICE_BELOW_BEST_ASK',`卖一价超过最高买价：卖一 ${number(asks[0].price)} > 配置上限 ${number(config.maxPrice)}，超出 ${number(asks[0].price-config.maxPrice)}；限价内可成交 0 份，预算 ${number(budget)} pUSD 全部无法成交`,{eligibleShares:0,availableBudget:0,remainingBudget:budget,nextAsk:asks[0].price});
@@ -109,6 +109,7 @@ export function simulateFill(book, budget, config, schedule, {strictTicks=false}
     const amounts=`预算 ${number(budget)} pUSD，限价 ${number(priceLimit)} 内共 ${number(eligibleShares)} 份，含手续费最多成交 ${number(availableBudget)} pUSD，缺少 ${number(Math.max(0,remaining))} pUSD`;
     const detail={remainingBudget:money(remaining),estimatedShares:money(shares)};
     if(nextAsk==null)reject('ORDER_BOOK_DEPTH_EXHAUSTED',`全部卖盘数量不足：${amounts}；接口有效卖盘中没有更高档卖单`,detail);
+    if(limitSource==='execution_cap')reject('EXECUTION_PRICE_LIMITED_DEPTH',`成交硬上限内深度不足：${amounts}；配置成交上限 ${number(config.maxPrice)}，下一档 ${number(nextAsk)} 超出；本策略不使用相对滑点百分比限制`,detail);
     if(limitSource==='max_price')reject('MAX_PRICE_LIMITED_DEPTH',`最高买价限制可成交数量：${amounts}；最高买价 ${number(config.maxPrice)} 按 tickSize ${number(tick)} 取整为有效限价 ${number(priceLimit)}；下一档 ${number(nextAsk)} 超过有效限价；滑点 ${number(config.slippage)}% 对应上限 ${number(slippageLimit)}`,detail);
     if(limitSource==='slippage')reject('SLIPPAGE_LIMITED_DEPTH',`滑点限制可成交数量：${amounts}；卖一 ${number(asks[0].price)}，滑点 ${number(config.slippage)}% 对应上限 ${number(slippageLimit)}，按 tickSize ${number(tick)} 取整为 ${number(priceLimit)}；下一档 ${number(nextAsk)} 超过有效限价；最高买价为 ${number(config.maxPrice)}`,detail);
     reject('BOTH_PRICE_LIMITS',`最高买价与滑点上限同时限制可成交数量：${amounts}；两个上限均为 ${number(rawPriceLimit)}，下一档 ${number(nextAsk)} 超过有效限价`,detail);
