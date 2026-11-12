@@ -51,7 +51,7 @@ export class RangeLiveEngine extends RangeEngine {
     if(requested&&Object.keys(requested).some(key=>requested[key]!==shared[key])||config.entryWindow!==this.source.store.account('paper').config.entryWindow)
       throw Error('区间参数和检测时长跟随区间突破模拟，请在模拟盘中修改');
     if(config.entryDelay!==0||config.maxPrice!==0.5||config.sameDirectionOnly||config.followPreviousAtOpen||config.reverseSignal)
-      throw Error('实盘跟随区间突破策略，固定零延迟和买价严格低于 0.50');
+      throw Error('实盘跟随区间突破策略，固定零延迟和触发卖一价严格低于 0.50');
     this.store.saveAccount({...account,config});this.log(mode,'info','实盘资金参数已保存；区间方向跟随模拟盘，马丁资金序列独立');this.broadcast();
   }
 }

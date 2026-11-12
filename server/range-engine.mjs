@@ -13,7 +13,7 @@ export class RangeEngine extends MomentumEngine {
   backfillMarketHistory(){
     if(this.closing||!this.venue.fetch||!Number.isFinite(this.spot?.windowSeconds))return this.backfillTask;
     const config=this.store.rangeConfig(),window=this.spot.windowSeconds,end=roundStart(this.now());
-    const state=this.store.rangeState(),start=Math.min(levelWindow(this.now(),config.levelLookbackHours,config.levelLagMinutes).start/1000,end-config.lookbackHours*3600,state?.breakoutPendingDirection&&!state.breakoutConfirmedAt?state.breakoutStartRound??end:end);
+    const state=this.store.rangeState(),start=Math.min(levelWindow(this.now(),config.levelLookbackHours,config.levelLagMinutes).start/1000,end-config.lookbackHours*3600,state?.breakoutPendingDirection&&!state.breakoutConfirmedAt?state.breakoutStartRound??end:end,state?.boundaryPauseSide?Math.max(state.boundaryPauseRound??end,end-config.resumeRounds*300):end);
     const known=new Set(this.store.marketPrices(window,start,end).map(item=>item.round));
     for(let round=end-300;round>=start;round-=300){
       const key=window+':'+round;
@@ -126,20 +126,20 @@ export class RangeEngine extends MomentumEngine {
     if(!Number.isFinite(spot.price)||spot.price<=0||!Number.isFinite(spot.at)||spot.at>now||now-spot.at>6000)return reject('RANGE_PRICE_STALE','当前官方报价无效或超过 6000 毫秒新鲜度上限，继续等待更新');
     const {config,candidate:analysisCandidate,vote}=this.analysis();
     const completedRounds=[];
-    const confirmationStart=Math.min(previous?.breakoutStartRound!=null&&!previous.breakoutConfirmedAt?previous.breakoutStartRound:Infinity,previous?.boundaryPauseSide?(previous.boundaryPauseRound??roundStart(now)):Infinity);
+    const confirmationStart=Math.min(previous?.breakoutStartRound!=null&&!previous.breakoutConfirmedAt?previous.breakoutStartRound:Infinity,previous?.boundaryPauseSide?Math.max(previous.boundaryPauseRound??roundStart(now),roundStart(now)-config.resumeRounds*300):Infinity);
     if(Number.isFinite(confirmationStart)){
       for(let round=confirmationStart;round<roundStart(now);round+=300){
         const history=this.store.historicalRound(round),prediction=this.store.roundPrediction(round),storedVote=this.store.vote(round),official=this.store.marketPrices(spot.windowSeconds,round,round+300)[0];
         const valid=value=>Number.isFinite(value)&&value>0;
-        let close=null,source=null;
+        let close=null,source=null,priceAt=null;
         if(history?.status==='void'||storedVote?.source==='official_void'){completedRounds.push({round,invalid:true});continue;}
         if(valid(history?.close)){close=history.close;source='polymarket_event_metadata';}
         else if(valid(official?.close)){close=official.close;source='polymarket_crypto_price';}
-        else if(prediction?.oracleWindow===spot.windowSeconds&&valid(prediction.close)){close=prediction.close;source=prediction.source;}
+        else if(prediction?.oracleWindow===spot.windowSeconds&&valid(prediction.close)){close=prediction.close;source=prediction.source;priceAt=prediction.priceAt??null;}
         else if(valid(storedVote?.close)&&['official','polymarket_event_metadata','polymarket_crypto_price'].includes(storedVote.source)){close=storedVote.close;source=storedVote.source;}
-        else {const tick=this.store.closingTick(round,spot.windowSeconds);if(tick){close=tick.price;source=tick.source;}}
+        else {const tick=this.store.closingTick(round,spot.windowSeconds);if(tick){close=tick.price;source=tick.source;priceAt=tick.time;}}
         if(!valid(close)){completedRounds.push({round,invalid:true});continue;}
-        completedRounds.push({round,close,source});
+        completedRounds.push({round,close,source,priceAt});
       }
     }
     let candidate={...analysisCandidate,completedRounds},usingSavedRange=false;
@@ -164,7 +164,7 @@ export class RangeEngine extends MomentumEngine {
       `当前上一场 #${vote.previousRound}：${vote.previousDirection}（${vote.previousSource==='official'?'官方最终结果':'未结算，场次预计结果'}）`:
       `当前上一场 #${vote.previousRound}：${vote.previousSource==='official_void'?'官方作废，无涨跌方向':'正在获取场次预计结果'}`;
     const message=state.phase==='range'?
-      (state.lockedDirectionRule==='boundary_return'?`已从${state.boundaryResumeSide==='lower'?'下支撑侧向上':'上压力侧向下'}返回中间区域，连续 ${state.boundaryConfirmCount} 场收盘确认完成，锁定买 ${state.direction}；恢复时价格 ${state.boundaryResumePrice.toFixed(2)} ${state.boundaryResumeSide==='lower'?'>':'<'} 中部${state.boundaryResumeSide==='lower'?'下':'上'}沿 ${state.boundaryResumeThreshold.toFixed(2)}。中部持续沿用此方向，再次触及边界后重新按返回侧选向；马丁资金序列保留`:
+      (state.lockedDirectionRule==='boundary_return'?`已从${state.boundaryResumeSide==='lower'?'下支撑侧向上':'上压力侧向下'}返回中间区域，${state.boundaryConfirmCount==null?'沿用升级前已保存的恢复方向（当时未启用连续收盘确认）':`连续 ${state.boundaryConfirmCount} 场收盘确认完成`}，锁定买 ${state.direction}；恢复时价格 ${state.boundaryResumePrice.toFixed(2)} ${state.boundaryResumeSide==='lower'?'>':'<'} 中部${state.boundaryResumeSide==='lower'?'下':'上'}沿 ${state.boundaryResumeThreshold.toFixed(2)}。中部持续沿用此方向，再次触及边界后重新按返回侧选向；马丁资金序列保留`:
       state.lockedDirectionRule==='tie_reverse_previous'?`区间基础方向 ${state.direction}；首次选向时 UP ${state.upCount} / DOWN ${state.downCount} 同票，采用当时上一场 #${state.lockedPreviousRound} ${state.lockedPreviousDirection}（${state.lockedPreviousSource==='official'?'官方最终结果':'场次预计结果'}）的反方向。${previousResultText}；区间内继续沿用已锁定方向`:
       `价格位于历史区间，已锁定 ${state.direction}，选向时 UP ${state.upCount} / DOWN ${state.downCount}；每场开盘沿用。当前上界 ${state.actualUpper.toFixed(2)} / 下界 ${state.actualLower.toFixed(2)}，每场结束重算`):
       `已连续 ${state.breakoutCount} 场收盘${state.direction==='UP'?'上穿压力':'下破支撑'}并超过参考区间宽度的 ${config.breakoutPercent}%，突破确认买 ${state.direction}；从场次 #${state.tradeFromRound} 起执行，回到参考区间内重新按区间规则选向`;

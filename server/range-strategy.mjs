@@ -175,9 +175,9 @@ export function rangeRegime(previous,candidate,vote,spot,configId,now){
       Object.assign(state,{boundaryConfirmCount:0,boundaryConfirmLastRound:null,boundaryConfirmLastClose:null,boundaryConfirmLastSource:null,
         boundaryConfirmLower:boundary.middleLower??null,boundaryConfirmUpper:boundary.middleUpper??null});
       // Recheck the latest consecutive closed rounds against the displayed blue area.
-      for(let closed=state.boundaryPauseRound;closed<round;closed+=300){
+      for(let closed=Math.max(state.boundaryPauseRound,round-state.resumeRounds*300);closed<round;closed+=300){
         const evidence=candidate.completedRounds?.find(item=>item.round===closed);
-        if(!evidence||evidence.invalid||!Number.isFinite(evidence.close)||evidence.close<=boundary.middleLower||evidence.close>=boundary.middleUpper){
+        if(!Number.isFinite(boundary.middleLower)||!Number.isFinite(boundary.middleUpper)||!evidence||evidence.invalid||evidence.priceAt!=null&&evidence.priceAt<closed*1000||!Number.isFinite(evidence.close)||evidence.close<=boundary.middleLower||evidence.close>=boundary.middleUpper){
           state.boundaryConfirmCount=0;state.boundaryConfirmLastRound=null;state.boundaryConfirmLastClose=null;state.boundaryConfirmLastSource=null;continue;
         }
         state.boundaryConfirmCount++;state.boundaryConfirmLastRound=closed;state.boundaryConfirmLastClose=evidence.close;state.boundaryConfirmLastSource=evidence.source;
