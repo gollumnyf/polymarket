@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_CONFIG } from './strategy.mjs';
 import { EARLY_SIGNAL_TOLERANCE } from './round-signals.mjs';
+import {mergeHistoricalRound} from './history-record.mjs';
 
 const schema = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
 const CONFIG = { baseAmount:'base_amount', initialBalance:'initial_balance', maxAmount:'max_amount',
@@ -16,7 +17,7 @@ const ORDER = { id:'id', mode:'mode', round:'round', session:'session', configId
   direction:'direction', budget:'budget', doubling:'doubling', createdAt:'created_at', settledAt:'settled_at',
   referencePrice:'reference_price', signalPrice:'signal_price', signalRule:'signal_rule', priceSource:'price_source',
   oracleWindow:'oracle_window', shares:'shares', notional:'notional', fee:'fee', cost:'cost',
-  price:'price', priceLimit:'price_limit', payout:'payout', pnl:'pnl', venueOrderId:'venue_order_id', note:'note' };
+  price:'price', priceLimit:'price_limit', payout:'payout', pnl:'pnl', venueOrderId:'venue_order_id', note:'note',entryReason:'entry_reason' };
 const SIGNAL = { round:'round', targetSeconds:'target_seconds', observedAt:'observed_at', direction:'direction',
   price:'price', referencePrice:'reference_price', source:'source', rule:'rule', oracleWindow:'oracle_window' };
 const HISTORY = { round:'round', end:'end', slug:'slug', status:'status', result:'result', open:'open',
@@ -59,6 +60,17 @@ export class Store {
     } catch (error) { this.db.close(); throw error; }
   }
   migrate(path) {
+    const table=this.db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get();
+    const version=table?this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version:0;
+    if(version>10)throw new Error('数据库版本高于当前程序，禁止降级打开');
+    if(version===10)return;
+    this.migrateVisibility(path);
+    this.transaction(()=>{
+      if(!this.db.prepare('PRAGMA table_info(orders)').all().some(c=>c.name==='entry_reason'))this.db.exec('ALTER TABLE orders ADD COLUMN entry_reason TEXT');
+      this.db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES (10,?)').run(Date.now());
+    });
+  }
+  migrateVisibility(path) {
     const table=this.db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get();
     const version=table?this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version:0;
     if(version>9)throw new Error('数据库版本高于当前程序，禁止降级打开');
@@ -356,7 +368,7 @@ export class Store {
     return this.transaction(() => {
       const previous = this.order(order.id);
       if (!previous) throw new Error('订单不存在，无法更新');
-      const next = { ...previous, ...order };
+      const next = { ...previous, ...order,entryReason:previous.entryReason };
       const row = this.orderRow(next);
       const columns = Object.keys(row).filter(k => k !== 'id');
       this.db.prepare(`UPDATE orders SET ${columns.map(c => `${c}=?`).join(',')} WHERE id=?`)
@@ -484,10 +496,7 @@ export class Store {
   historicalRound(round) { return decode(this.db.prepare('SELECT * FROM round_history WHERE round=?').get(round), HISTORY) || null; }
   saveHistoricalRound(item, updatedAt = Date.now()) {
     const previous = this.historicalRound(item.round);
-    const final = value => ['resolved','void'].includes(value?.status);
-    if (final(previous) && !final(item)) return previous;
-    const next = { ...item, open:item.open ?? previous?.open ?? null, close:item.close ?? previous?.close ?? null,
-      change:item.change ?? previous?.change ?? null, changePercent:item.changePercent ?? previous?.changePercent ?? null, updatedAt };
+    const next = {...mergeHistoricalRound(previous,item),updatedAt};
     this.write('round_history', encode(next, HISTORY), ['round']); return next;
   }
   saveEntryBlock(mode, block) { this.write('entry_blocks', { mode,round:block.round,message:block.message,at:block.at }, ['mode','round']); }

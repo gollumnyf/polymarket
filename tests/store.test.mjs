@@ -60,7 +60,7 @@ test('JSON migration preserves trading fields, timestamps, signal, IDs and logs 
   assert.equal(store.db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
   store.close(); store = new Store(path);
   assert.equal(store.backupPath,undefined);
-  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get().n,2);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get().n,3);
   assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM strategy_configs WHERE mode=\'paper\'').get().n,1);
   assert.equal(store.reserveOrder({...order,id:'duplicate'}),false);
   const original = new DatabaseSync(backup,{readOnly:true});
@@ -102,7 +102,7 @@ test('v1 signal rows migrate to per-entry-time keys with backup, restart persist
   assert.equal(store.backupPath,undefined);
   assert.equal(store.initialSignal(1800000000,5).direction,'DOWN');
   assert.equal(store.initialSignal(1800000000,10).direction,'UP');
-  assert.equal(store.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version,9);
+  assert.equal(store.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version,10);
 });
 
 test('v2 upgrades preserve orders and predictions survive restart without settling the balance',t=>{

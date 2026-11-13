@@ -32,7 +32,7 @@ for(const direction of ['UP','DOWN'])test(direction+' market streak buys opposit
   const c=fixture(t);c.streak(direction);c.store.saveAccount({...c.store.account('paper'),losses:1,config:{...c.store.account('paper').config,slippage:0}});
   await c.engine.start('paper');await c.engine.attempt('paper');await c.engine.attempt('paper');
   const order=c.store.orderForRound('paper',round);assert.ok(order);assert.equal(order.direction,direction==='UP'?'DOWN':'UP');assert.equal(order.price,0.8);assert.equal(order.budget,20);assert.equal(order.createdAt,end+1);
-  assert.equal(order.signalRule,'range_streak_reverse');assert.equal(order.streakSignal.samples.length,3);assert.equal(order.streakSignal.marketDirection,direction);assert.equal(c.store.orderCount('paper'),1);
+  assert.match(order.entryReason,/仅统计当前开盘场次紧前/);assert.match(order.entryReason,/蓝色区域/);assert.match(order.entryReason,/马丁第 2 笔/);assert.equal(order.signalRule,'range_streak_reverse');assert.equal(order.streakSignal.samples.length,3);assert.equal(order.streakSignal.marketDirection,direction);assert.equal(c.store.orderCount('paper'),1);
   assert.ok(c.store.rangeState());assert.equal(c.store.account('paper').running,true);
 });
 
@@ -44,11 +44,19 @@ test('only adjacent ended rounds trigger, with a configurable count',t=>{
   c.vote(round-1200,'UP');assert.equal(c.engine.signal().direction,'DOWN');
 });
 
-test('a gap or void breaks a new streak; prior locked direction persists through mixed rounds then switches',t=>{
+test('missing immediately previous market cannot be replaced by a saved older streak',t=>{
+  const c=fixture(t);c.streak('DOWN');assert.equal(c.engine.signal().streakSignal.direction,'UP');
+  c.setNow(end+300001);
+  assert.equal(c.engine.signal().streakSignal,undefined);
+  c.vote(round,'UP');assert.equal(c.engine.signal().streakSignal,undefined);
+  c.vote(round,'DOWN');assert.equal(c.engine.signal().streakSignal.lastRound,round);
+});
+
+test('a gap or void breaks a streak and mixed latest rounds cannot reuse an earlier trigger',t=>{
   const c=fixture(t);c.streak('UP');c.store.db.prepare('DELETE FROM range_votes WHERE round=?').run(round-600);
   assert.equal(c.engine.signal().streakSignal,undefined);c.store.saveVote({round:round-600,source:'official_void',updatedAt:c.now()});assert.equal(c.engine.signal().streakSignal,undefined);
   c.store.db.prepare('DELETE FROM range_votes WHERE round=?').run(round-600);c.vote(round-600,'UP');assert.equal(c.engine.signal().direction,'DOWN');
-  for(let i=0;i<3;i++){c.vote(round+i*300,'DOWN');c.setNow(end+(i+1)*300000+1);assert.equal(c.engine.signal().direction,i===2?'UP':'DOWN');}
+  for(let i=0;i<3;i++){c.vote(round+i*300,'DOWN');c.setNow(end+(i+1)*300000+1);assert.equal(c.engine.signal().streakSignal?.direction,i===2?'UP':undefined);}
   assert.equal(c.engine.signal().streakSignal.lastRound,round+600);
 });
 
@@ -61,12 +69,12 @@ test('untraded predicted market rounds trigger and official disagreement withdra
   await c.engine.attempt('paper');assert.equal(c.store.orderCount('paper'),1);
 });
 
-test('a corrected newest streak falls back to the last still-valid locked market direction',t=>{
+test('a corrected newest streak never falls back to an older trigger',t=>{
   const c=fixture(t);c.streak('UP');assert.equal(c.engine.signal().direction,'DOWN');
   for(let i=0;i<3;i++)c.store.marketRound(round+i*300,100,99,60,end+(i+1)*300000);
   c.setNow(end+900001);assert.equal(c.engine.signal().direction,'UP');
   c.store.saveHistoricalRound({round:round+600,end:round+900,slug:'btc-updown-5m-'+(round+600),status:'resolved',result:'UP',open:100,close:101},c.now());
-  const corrected=c.engine.signal();assert.equal(corrected.direction,'DOWN');assert.equal(corrected.streakSignal.lastRound,round-300);
+  const corrected=c.engine.signal();assert.equal(corrected.streakSignal,undefined);
 });
 
 test('an official confirmation upgrades evidence without duplicate events or changing archived order data',async t=>{
@@ -107,11 +115,11 @@ test('stale market data and account limits still block a streak trade',async t=>
   c.store.saveAccount({...c.store.account('paper'),balance:0});await c.engine.attempt('paper');assert.equal(c.engine.entryBlocks.paper.code,'RISK_LIMIT');assert.equal(c.store.orderCount('paper'),0);
 });
 
-test('streak state and typed order samples survive restart; latest mixed market retains lock',async t=>{
+test('typed order samples survive restart while mixed latest rounds disable old triggers',async t=>{
   const folder=mkdtempSync(join(tmpdir(),'range-streak-')),path=join(folder,'test.sqlite');
   const c=fixture(t,{path});c.streak('UP');await c.engine.start('paper');await c.engine.attempt('paper');c.close();
   const store=new RangeStore(path);t.after(()=>{store.close();rmSync(folder,{recursive:true,force:true});});const engine=new RangeEngine(store,c.venue,{now:()=>end+300001});engine.spot={...c.engine.spot,round:round+300,at:end+300001};store.saveVote({round,outcome:'DOWN',source:'official',updatedAt:end+300000});
-  assert.equal(engine.signal().direction,'DOWN');assert.equal(store.orderForRound('paper',round).streakSignal.samples.length,3);assert.equal(store.account('paper').running,false);
+  assert.equal(engine.signal().streakSignal,undefined);assert.equal(store.orderForRound('paper',round).streakSignal.samples.length,3);assert.equal(store.account('paper').running,false);
 });
 
 test('migration enables new rule without rewriting historical config, and saved disable survives restart',t=>{
@@ -153,9 +161,9 @@ test('missing range history cannot enable unrestricted streak entry',async t=>{
 test('streak retains its direction but waits for two blue closes after a boundary pause',async t=>{
   const c=fixture(t);c.streak('UP');c.engine.spot.price=110;assert.equal(c.engine.signal().code,'RANGE_BOUNDARY_WAIT');
   c.engine.spot.price=150;assert.equal(c.engine.signal().code,'RANGE_RETURN_CONFIRMING');
-  c.store.marketRound(round,150,150,60,end+300000);c.setNow(end+300001);
+  c.store.marketRound(round,149,150,60,end+300000);c.setNow(end+300001);
   assert.equal(c.engine.signal().state.boundaryConfirmCount,1);assert.equal(c.engine.signal().direction,null);
-  c.store.marketRound(round+300,150,150,60,end+600000);c.setNow(end+600001);
+  c.store.marketRound(round+300,149,150,60,end+600000);c.setNow(end+600001);
   const ready=c.engine.signal();assert.equal(ready.direction,'DOWN');assert.equal(ready.state.boundaryPauseSide,null);
   await c.engine.start('paper');await c.engine.attempt('paper');assert.equal(c.store.orderForRound('paper',round+600).direction,'DOWN');
 });

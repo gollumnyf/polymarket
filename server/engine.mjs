@@ -291,6 +291,8 @@ export class Engine extends EventEmitter {
       signalPrice:this.spot?.round===start?this.spot.price:null,priceSource:this.spot?.round===start?this.spot.source||null:null,
       oracleWindow:this.spot?.round===start?this.spot.windowSeconds??null:this.store.roundOpening(start)?.oracleWindow??null,
       feeSchedule: this.market.feeSchedule, pnl: null,...this.orderSignalFields(account,start) };
+    order.entryReason=[order.entryReason||`入场规则 ${order.signalRule}：参考价 ${order.referencePrice}，当前价 ${order.signalPrice}，选择买 ${direction}`,
+      `场次 #${start}，开盘后 ${((order.createdAt-start*1000)/1000).toFixed(3)} 秒；马丁第 ${order.doubling+1} 笔，预算 ${order.budget.toFixed(2)} pUSD；盘口卖一 ${book.asks[0]?.price}，预计成交均价 ${quote.price}，本次成交限价 ${quote.priceLimit}`].join('；');
     if (!this.store.reserveOrder(order, book)) return;
     if (mode === 'paper') {
       this.store.transaction(() => {

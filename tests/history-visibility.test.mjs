@@ -55,7 +55,7 @@ test('v8 migration keeps records visible by default and hidden flags survive reo
   const dir=mkdtempSync(join(tmpdir(),'pulse-hide-')),path=join(dir,'store.sqlite');
   let store=new Store(path);t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true});});
   order(store,'old');store.log('paper','info','old log');
-  store.db.exec('DROP INDEX orders_visible; DROP INDEX logs_visible; ALTER TABLE orders DROP COLUMN is_hide; ALTER TABLE logs DROP COLUMN is_hide; DROP TABLE system_log_visibility; DELETE FROM schema_migrations WHERE version=9;');
+  store.db.exec('DROP INDEX orders_visible; DROP INDEX logs_visible; ALTER TABLE orders DROP COLUMN is_hide; ALTER TABLE logs DROP COLUMN is_hide; DROP TABLE system_log_visibility; DELETE FROM schema_migrations WHERE version>=9;');
   store.close();store=new Store(path);
   assert.equal(store.historyPage('paper','orders').total,1);
   assert.equal(store.historyPage('paper','logs').total,1);

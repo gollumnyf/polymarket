@@ -2,6 +2,7 @@ import { roundStart, money, DEFAULT_CONFIG } from './strategy.mjs';
 import { safeError } from './polymarket.mjs';
 import { recordRoundSignals, SIGNAL_SAMPLE_SECONDS, withReversal } from './round-signals.mjs';
 import {oppositeDirection} from '../src/entry-mode.mjs';
+import {mergeHistoricalRound} from './history-record.mjs';
 
 import {HISTORY_COUNT} from '../src/history-summary.mjs';
 export {HISTORY_COUNT};
@@ -80,6 +81,7 @@ export class RoundHistory {
       oracleWindow:reference.oracleWindow,source:tick.source,priceAt:tick.time}:null;
   }
   snapshot(entryDelay = DEFAULT_CONFIG.entryDelay,followPreviousAtOpen=false,reverseSignal=false) {
+    this.syncSaved(this.starts());
     const items = this.starts().map(round => this.cache.get(round) || this.store?.historicalRound(round) || {
       round, end: round + 300, slug: `btc-updown-5m-${round}`, result: null,
       status: 'loading', open: null, close: null, change: null, changePercent: null,
@@ -110,10 +112,7 @@ export class RoundHistory {
     this.lastAttempt = this.now(); this.currentRound = roundStart(this.now());
     const starts = this.starts();
     for (const key of this.cache.keys()) if (!starts.includes(key)) this.cache.delete(key);
-    for (const round of starts) if (!this.cache.has(round)) {
-      const saved = this.store?.historicalRound(round);
-      if (saved) this.cache.set(round, saved);
-    }
+    this.syncSaved(starts);
     this.updatedAt = Math.max(this.updatedAt || 0, ...[...this.cache.values()].map(item => item.updatedAt || 0)) || null;
     const missing = starts.filter(round => {
       const item = this.cache.get(round);
@@ -132,20 +131,37 @@ export class RoundHistory {
       const conditions = [...new Set(selected.flatMap(event => event.markets || [])
         .filter(m => wanted.has(m.slug)).map(m => m.conditionId).filter(Boolean))];
       if (conditions.length > HISTORY_COUNT) throw new Error('历史场次包含异常数量的市场');
-      const resolutions = conditions.length ? await this.venue.public.fetchResolutions({ conditionIds: conditions }) : [];
+      // The SDK accepts at most 20 IDs, independently of the displayed count.
+      // Keep successful batches and event prices even if another batch fails.
+      const resolutions=[],errors=[];
+      for(let offset=0;offset<conditions.length;offset+=20){
+        try{
+          const batch=await this.venue.public.fetchResolutions({conditionIds:conditions.slice(offset,offset+20)});
+          if(!Array.isArray(batch))throw new Error('历史结算响应无效');
+          resolutions.push(...batch);
+        }catch(error){errors.push(safeError(error));}
+      }
       for (const round of missing) {
         const slug = `btc-updown-5m-${round}`;
         const event = selected.find(e => e.slug === slug);
         const market = event?.markets?.find(m => m.slug === slug);
         const resolution = resolutions.find(r => r.conditionId === market?.conditionId);
         const next = normalizeHistoricalRound(round, event, resolution);
-        const previous = this.cache.get(round);
-        // Transient omissions must not erase a result that was already finalized.
-        if (!previous || !['resolved', 'void'].includes(previous.status) || ['resolved', 'void'].includes(next.status)) {
-          this.cache.set(round, this.store ? this.store.saveHistoricalRound(next, this.now()) : next);
-        }
+        const merged=mergeHistoricalRound(this.cache.get(round),next);
+        this.cache.set(round,this.store?this.store.saveHistoricalRound(merged,this.now()):{...merged,updatedAt:this.now()});
       }
-      this.updatedAt = this.now(); this.error = null;
+      this.updatedAt = this.now(); this.error = errors.length?[...new Set(errors)].join('；'):null;
     } catch (error) { this.error = safeError(error); }
+  }
+  syncSaved(starts) {
+    for(const round of starts){
+      const saved=this.store?.historicalRound(round),cached=this.cache.get(round);
+      if(!saved)continue;
+      // The strategy's background history poll can settle a round without this
+      // page fetching it. Prefer its latest saved result over stale page memory.
+      const next=(saved.updatedAt??0)>=(cached?.updatedAt??0)?mergeHistoricalRound(cached,saved):mergeHistoricalRound(saved,cached);
+      this.cache.set(round,next);
+      this.updatedAt=Math.max(this.updatedAt||0,next.updatedAt||0)||null;
+    }
   }
 }

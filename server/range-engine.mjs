@@ -162,7 +162,7 @@ export class RangeEngine extends MomentumEngine {
     if(streak){
       const estimated=streak.samples.filter(sample=>sample.source!=='official').length;
       return {direction:streak.direction,code:null,directionRule:'market_streak_reverse',streakSignal:streak,state,candidate,vote,usingSavedRange,boundary,
-        message:`连续 ${streak.roundsRequired} 场市场结果同为 ${streak.marketDirection}（#${streak.firstRound}–#${streak.lastRound}，${estimated} 场使用预计结果），开盘锁定反向买 ${streak.direction}，后续每场沿用；再次出现连续同向时重新选向。仅在蓝色区域内且恢复确认完成后下单，不设策略买价上限；每场一单和资金限额仍有效`};
+        message:`连续 ${streak.roundsRequired} 场市场结果同为 ${streak.marketDirection}（#${streak.firstRound}–#${streak.lastRound}，${estimated} 场使用预计结果），本场反向买 ${streak.direction}；仅统计当前开盘场次紧前的 ${streak.roundsRequired} 场，不跳过任何场次，每场重新核对。仅在蓝色区域内且恢复确认完成后下单，不设策略买价上限；每场一单和资金限额仍有效`};
     }
     if(!state.direction&&vote.complete&&vote.up===vote.down)return {direction:null,code:'RANGE_TIE_PREVIOUS_UNAVAILABLE',
       message:`区间初次选向同票（UP ${vote.up} / DOWN ${vote.down}），上一场 #${vote.previousRound} ${vote.previousSource==='official_void'?'官方判定作废，没有涨跌方向':'尚无有效官方结果和预测方向'}，继续等待`,state,candidate,vote};
@@ -192,8 +192,9 @@ export class RangeEngine extends MomentumEngine {
   }
   orderSignalFields(){
     const decision=this.signal();
-    if(decision.streakSignal)return {signalRule:'range_streak_reverse',referencePrice:this.spot.currentOpen??null,signalPrice:this.spot.price,streakSignal:{...decision.streakSignal,observedAt:this.now()}};
-    return {signalRule:'range_regime',referencePrice:this.spot.currentOpen??null,signalPrice:this.spot.price,
+    const entryReason=decision.message+`；下单参考价 ${this.spot.price}，蓝色区域须 > ${decision.boundary?.middleLower} 且 < ${decision.boundary?.middleUpper}`;
+    if(decision.streakSignal)return {entryReason,signalRule:'range_streak_reverse',referencePrice:this.spot.currentOpen??null,signalPrice:this.spot.price,streakSignal:{...decision.streakSignal,observedAt:this.now()}};
+    return {entryReason,signalRule:'range_regime',referencePrice:this.spot.currentOpen??null,signalPrice:this.spot.price,
       rangeSignal:{...decision.state,price:this.spot.price,priceAt:this.spot.at,directionRule:decision.directionRule,
         decisionUpCount:decision.state.upCount,decisionDownCount:decision.state.downCount,
         tiePreviousRound:decision.state.lockedPreviousRound,

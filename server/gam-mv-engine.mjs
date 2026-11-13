@@ -37,6 +37,6 @@ export class GamMvEngine extends MomentumEngine {
   snapshot() { return { ...super.snapshot(), strategy: 'gam_mv', gam: this.signal(), gamModel: this.gamModel }; }
   entryDirection() { return this.signal().direction; }
   entryGuard() { const result = this.signal(); return result.code ? result : super.entryGuard(); }
-  orderSignalFields() { const s = this.signal(); return { signalRule: 'gam_mean_variance', referencePrice: this.spot?.currentOpen, signalPrice: this.spot?.price, gamSignal: s }; }
+  orderSignalFields() { const s = this.signal(); return { entryReason: `${s.message}；UP 估值 ${s.fairUp} / 卖一 ${s.upCost}，DOWN 估值 ${s.fairDown} / 卖一 ${s.downCost}，最低边际 ${this.gamModel.minEdge}`, signalRule: 'gam_mean_variance', referencePrice: this.spot?.currentOpen, signalPrice: this.spot?.price, gamSignal: s }; }
 }
 

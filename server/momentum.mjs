@@ -90,7 +90,7 @@ export class MomentumEngine extends Engine {
     return null;
   }
   entryDirection(){return this.signal().direction;}
-  orderSignalFields(){const s=this.signal();return {signalRule:'official_momentum',referencePrice:s.referencePrice,signalPrice:s.latestPrice,momentumSignal:s};}
+  orderSignalFields(){const s=this.signal();return {entryReason:s.message,signalRule:'official_momentum',referencePrice:s.referencePrice,signalPrice:s.latestPrice,momentumSignal:s};}
   quote(book,budget,config,schedule){return simulateFill(book,budget,{...config,maxPrice:0.5},schedule,{strictTicks:true});}
   async attempt(mode){
     if(!this.modes.includes(mode)||this.entryBusy||this.closing)return;

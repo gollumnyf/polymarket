@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS orders (
   oracle_window INTEGER, fee_rate REAL, fee_exponent REAL,
   shares REAL, notional REAL, fee REAL, cost REAL, price REAL, price_limit REAL,
   fee_estimated INTEGER CHECK(fee_estimated IN (0,1)),
-  payout REAL, pnl REAL, venue_order_id TEXT, note TEXT,
+  payout REAL, pnl REAL, venue_order_id TEXT, note TEXT, entry_reason TEXT,
   is_hide INTEGER NOT NULL DEFAULT 0 CHECK(is_hide IN (0,1)),
   UNIQUE(mode,round)
 );

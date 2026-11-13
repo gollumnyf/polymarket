@@ -48,7 +48,10 @@ test('history keeps exactly 40 completed windows oldest first and caches finaliz
       batches.push(slugs);
       return { ok: true, json: async () => slugs.map(slug => fixture(Number(slug.split('-').at(-1))).event) };
     },
-    public: { fetchResolutions: async ({ conditionIds }) => conditionIds.map(conditionId => ({ conditionId, status: 'resolved', payouts: ['1', '0'] })) },
+    public: { fetchResolutions: async ({ conditionIds }) => {
+      assert.ok(conditionIds.length<=20,'SDK accepts at most 20 distinct condition IDs');
+      return conditionIds.map(conditionId => ({ conditionId, status: 'resolved', payouts: ['1', '0'] }));
+    } },
   };
   const history = new RoundHistory(venue, { now: () => now });
   const first = await history.read();
@@ -158,4 +161,49 @@ test('history counts match displayed official results and exclude pending foreca
   assert.deepEqual(summarizeHistory(items),{up:1,down:1,pending:3,void:1});
   items[2]={result:'DOWN',status:'resolved',forecast:{outcome:'UP'}};
   assert.deepEqual(summarizeHistory(items),{up:1,down:2,pending:2,void:1});
+});
+
+
+test('one failed resolution batch preserves successful results and event prices in SQLite, then retries',async t=>{
+  const store=new Store(':memory:');t.after(()=>store.close());
+  let now=1800000010000,calls=0,failing=true;
+  const venue={fetch:async url=>({ok:true,json:async()=>new URL(url).searchParams.getAll('slug').map(slug=>fixture(Number(slug.split('-').at(-1))).event)}),
+    public:{fetchResolutions:async({conditionIds})=>{
+      assert(conditionIds.length<=20);calls++;
+      if(failing&&calls===1)throw Error('first batch timeout');
+      return conditionIds.map(conditionId=>({conditionId,status:'resolved',payouts:['1','0']}));
+    }}};
+  const history=new RoundHistory(venue,{store,now:()=>now});
+  let data=await history.read();
+  assert.equal(calls,2);assert.equal(data.items.filter(i=>i.status==='resolved').length,20);
+  assert(data.items.every(i=>i.open===74500&&i.close===74520));assert.match(data.error,/first batch timeout/);
+  assert.equal(store.db.prepare('SELECT COUNT(*) n FROM round_history').get().n,40);
+  failing=false;now+=16000;data=await history.read();
+  assert.equal(data.items.filter(i=>i.status==='resolved').length,40);assert.equal(data.error,null);
+  const restart=new RoundHistory({fetch:async()=>{throw Error('offline');}},{store,now:()=>now});
+  assert.equal((await restart.read()).items.filter(i=>i.result==='UP').length,40);
+});
+
+test('page cache immediately sees background settlement in SQLite even before next fetch or when offline',async t=>{
+  const store=new Store(':memory:');t.after(()=>store.close());
+  const round=1799999700;let now=(round+310)*1000;
+  store.saveHistoricalRound(normalizeHistoricalRound(round,...Object.values(fixture(round,{status:'proposed',close:null}))),now);
+  const history=new RoundHistory({fetch:async()=>{throw Error('offline');}},{store,now:()=>now});
+  assert.equal((await history.read()).items.at(-1).status,'pending');
+  now+=1000;
+  const {event,resolution}=fixture(round,{close:null});
+  store.saveHistoricalRound(normalizeHistoricalRound(round,event,resolution),now);
+  const next=(await history.read()).items.at(-1);
+  assert.equal(next.status,'resolved');assert.equal(next.result,'UP');assert.equal(next.close,null);
+});
+
+test('partial metadata and transient event omissions never erase prices or a finalized result',async t=>{
+  const store=new Store(':memory:');t.after(()=>store.close());
+  const round=1799999700,{event,resolution}=fixture(round,{close:null});
+  store.saveHistoricalRound(normalizeHistoricalRound(round,event,resolution),1000);
+  const prices=fixture(round,{close:74520,status:'proposed'});
+  const updated=store.saveHistoricalRound(normalizeHistoricalRound(round,prices.event,prices.resolution),2000);
+  assert.equal(updated.result,'UP');assert.equal(updated.status,'resolved');assert.equal(updated.close,74520);assert.equal(updated.change,20);
+  store.saveHistoricalRound(normalizeHistoricalRound(round,null,null),3000);
+  assert.equal(store.historicalRound(round).close,74520);assert.equal(store.historicalRound(round).result,'UP');
 });
