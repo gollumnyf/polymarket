@@ -59,6 +59,21 @@ export class Store {
     } catch (error) { this.db.close(); throw error; }
   }
   migrate(path) {
+    const table=this.db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get();
+    const version=table?this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version:0;
+    if(version>9)throw new Error('数据库版本高于当前程序，禁止降级打开');
+    if(version===9)return;
+    this.migrateBase(path);
+    this.transaction(()=>{
+      for(const table of ['orders','logs'])if(!this.db.prepare('PRAGMA table_info('+table+')').all().some(c=>c.name==='is_hide'))
+        this.db.exec('ALTER TABLE '+table+' ADD COLUMN is_hide INTEGER NOT NULL DEFAULT 0 CHECK(is_hide IN (0,1))');
+      this.db.exec(`CREATE TABLE IF NOT EXISTS system_log_visibility(log_id INTEGER NOT NULL REFERENCES logs(id) ON DELETE CASCADE,mode TEXT NOT NULL CHECK(mode IN ('paper','live')),is_hide INTEGER NOT NULL DEFAULT 0 CHECK(is_hide IN (0,1)),PRIMARY KEY(log_id,mode));
+        CREATE INDEX IF NOT EXISTS orders_visible ON orders(mode,is_hide,round DESC);
+        CREATE INDEX IF NOT EXISTS logs_visible ON logs(mode,is_hide,id DESC);`);
+      this.db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES (9,?)').run(Date.now());
+    });
+  }
+  migrateBase(path) {
     const legacy = this.db.prepare('PRAGMA table_info(accounts)').all().some(c => c.name === 'body');
     const versionTable = this.db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get();
     const version = versionTable ? this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version : 0;
@@ -255,7 +270,7 @@ export class Store {
   }
   readOrder(row) {
     if (!row) return null;
-    return { ...decode(row, ORDER), prediction:this.prediction(row.id), feeSchedule:row.fee_rate == null && row.fee_exponent == null ? null
+    return { ...decode(row, ORDER), isHide:Boolean(row.is_hide), prediction:this.prediction(row.id), feeSchedule:row.fee_rate == null && row.fee_exponent == null ? null
       : { rate:row.fee_rate, exponent:row.fee_exponent },
       feeEstimated:row.fee_estimated == null ? null : Boolean(row.fee_estimated),
       tradeIds:this.db.prepare('SELECT trade_id FROM order_trade_ids WHERE order_id=? ORDER BY position').all(row.id).map(t => t.trade_id) };
@@ -362,12 +377,29 @@ export class Store {
   historyVersion(mode) {
     return Object.fromEntries(Object.entries(this.historyVersions[mode]).map(([key,value]) => [key,`${this.historyEpoch}:${value}`]));
   }
+  setHistoryHidden(mode,kind,hidden) {
+    if(!['paper','live'].includes(mode)||!['orders','logs'].includes(kind)||typeof hidden!=='boolean')throw new Error('无效隐藏参数');
+    return this.transaction(()=>{
+      let changed=Number(this.db.prepare('UPDATE '+kind+' SET is_hide=? WHERE mode=? AND is_hide<>?').run(Number(hidden),mode,Number(hidden)).changes);
+      if(kind==='logs'){
+        const rows=this.db.prepare("SELECT id FROM logs WHERE mode='system' AND id>? AND COALESCE((SELECT is_hide FROM system_log_visibility WHERE log_id=logs.id AND mode=?),0)<>?").all(this.systemLogCutoff(mode),mode,Number(hidden));
+        for(const row of rows)this.db.prepare('INSERT INTO system_log_visibility(log_id,mode,is_hide) VALUES (?,?,?) ON CONFLICT(log_id,mode) DO UPDATE SET is_hide=excluded.is_hide').run(row.id,mode,Number(hidden));
+        changed+=rows.length;
+      }
+      this.historyVersions[mode][kind]++;
+      return changed;
+    });
+  }
   historyPage(mode, kind, { page = 1, pageSize = 20, status = 'all', anchor = null } = {}) {
     const order = kind === 'orders';
     const table = order ? 'orders' : 'logs';
     const identity = order ? 'rowid' : 'id';
     const args = order ? [mode] : [mode,this.systemLogCutoff(mode)];
     let where = order ? 'mode=?' : "(mode=? OR (mode='system' AND id>?))";
+    const visibility=order?'is_hide':"CASE WHEN mode='system' THEN COALESCE((SELECT is_hide FROM system_log_visibility WHERE log_id=logs.id AND mode=?),0) ELSE is_hide END";
+    const visibilityArgs=order?[]:[mode];
+    const hiddenCount=this.db.prepare('SELECT COUNT(*) AS n FROM '+table+' WHERE '+where+' AND '+visibility+'=1').get(...args,...visibilityArgs).n;
+    where+=' AND '+visibility+'=0';args.push(...visibilityArgs);
     const upper = anchor ?? this.db.prepare(`SELECT COALESCE(MAX(${identity}),0) AS anchor FROM ${table} WHERE ${where}`).get(...args).anchor;
     where += ` AND ${identity}<=?`; args.push(upper);
     if (order && status !== 'all') {
@@ -380,7 +412,7 @@ export class Store {
     const rows = this.db.prepare(`SELECT * FROM ${table} WHERE ${where} ORDER BY ${order ? 'round DESC' : 'id DESC'} LIMIT ? OFFSET ?`)
       .all(...args,pageSize,(page-1)*pageSize);
     return { items:order ? rows.map(row => this.readOrder(row)) : rows,
-      page,pageSize,total,pages,anchor:upper };
+      page,pageSize,total,pages,anchor:upper,hiddenCount };
   }
   log(mode, level, message) {
     this.db.prepare('INSERT INTO logs(time,mode,level,message) VALUES (?,?,?,?)').run(Date.now(), mode, level, message);
@@ -390,8 +422,8 @@ export class Store {
     return this.db.prepare('SELECT system_through_id FROM log_clear_positions WHERE mode=?').get(mode)?.system_through_id ?? 0;
   }
   logs(mode,limit=70) {
-    return this.db.prepare("SELECT * FROM logs WHERE mode=? OR (mode='system' AND id>?) ORDER BY id DESC LIMIT ?")
-      .all(mode,this.systemLogCutoff(mode),limit);
+    return this.db.prepare("SELECT logs.*,CASE WHEN mode='system' THEN COALESCE((SELECT is_hide FROM system_log_visibility WHERE log_id=logs.id AND mode=?),0) ELSE is_hide END AS is_hide FROM logs WHERE mode=? OR (mode='system' AND id>?) ORDER BY id DESC LIMIT ?")
+      .all(mode,mode,this.systemLogCutoff(mode),limit);
   }
   clearPaperOrders() {
     return this.transaction(()=>{

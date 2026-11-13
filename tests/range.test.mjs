@@ -13,7 +13,7 @@ import {Engine} from '../server/engine.mjs';
 import {createApp} from '../server/index.mjs';
 import {apiPath} from '../src/api.mjs';
 
-const round=1800000000,end=round*1000,config={...RANGE_DEFAULTS,lookbackHours:1,levelLagMinutes:0};
+const round=1800000000,end=round*1000,config={...RANGE_DEFAULTS,streakReverseEnabled:false,lookbackHours:1,levelLagMinutes:0};
 function waveBars(until=end){return Array.from({length:720},(_,i)=>{
   const price=100+0.2*Math.sin(i*Math.PI/60),bucket=until-3600000+i*5000;
   return {bucket,open:price,close:price,low:price,high:price,firstAt:bucket,lastAt:bucket+4000,maxGapMs:1000,samples:5};
@@ -590,7 +590,7 @@ test('boundary bands include both thresholds and outside; only the strict middle
   for(const price of [90,100,120,180,200,210])assert.equal(rangeBoundary(state,price).paused,true);
   for(const price of [120.00001,150,179.99999])assert.equal(rangeBoundary(state,price).paused,false);
   const frozen={lower:0,upper:1000,breakoutReferenceLower:100,breakoutReferenceUpper:200};
-  assert.equal(rangeBoundary(frozen,201).paused,true);assert.equal(rangeBoundary(frozen,150).paused,false);
+  assert.equal(rangeBoundary(frozen,201).paused,false);assert.equal(rangeBoundary(frozen,150).paused,true);assert.equal(rangeBoundary(frozen,201).middleLower,200);assert.equal(rangeBoundary(frozen,201).middleUpper,800);
   assert.equal(rangeBoundary({lower:100,upper:100},100).code,'RANGE_BOUNDARY_INVALID');
 });
 
@@ -877,4 +877,35 @@ test('live uses the shared execution cap as FOK limit and records independent se
   await c.engine.start('live');await c.engine.attempt('live');
   assert.equal(c.submissions.length,1);assert.equal(c.submissions[0].quote.priceLimit,0.53);assert.ok(c.submissions[0].quote.price>0.5);
   assert.equal(c.store.orderForRound('live',round).rangeSignal.executionMaxPrice,0.53);assert.equal(c.source.store.orderCount('paper'),0);
+});
+
+
+test('blue boundaries use the screenshot rolling levels instead of the previous breakout reference',()=>{
+  const state={lower:71137.74745758885,upper:71540.08404051518,edgePercent:20,breakoutReferenceLower:73228.85878012747,breakoutReferenceUpper:73586.10961744789};
+  const boundary=rangeBoundary(state,71300);
+  assert.equal(boundary.paused,false);assert.equal(boundary.middleLower.toFixed(2),'71218.21');assert.equal(boundary.middleUpper.toFixed(2),'71459.62');
+  assert.ok(state.lower<boundary.middleLower&&boundary.middleUpper<state.upper);
+  assert.equal(rangeBoundary(state,71206.55).side,'lower');
+  assert.equal(rangeBoundary(state,boundary.middleLower).paused,true);assert.equal(rangeBoundary(state,boundary.middleUpper).paused,true);
+});
+
+test('a confirmed old breakout ends in the new rolling blue area and retains required recovery closes',()=>{
+  const old=confirmationCandidate({lower:73228.85878012747,upper:73586.10961744789});
+  let state=decide(null,old,73000);
+  state=decide(state,{...old,completedRounds:closes([73000,73000])},73000,end+600000);
+  assert.equal(state.phase,'breakout_down');assert.equal(state.boundaryPauseSide,'lower');
+  const current=confirmationCandidate({lower:71137.74745758885,upper:71540.08404051518,completedRounds:closes([73000,71300,71300])});
+  state=decide(state,current,71300,end+900000);
+  assert.equal(state.phase,'range');assert.equal(state.breakoutReferenceLower,null);assert.equal(state.boundaryPauseSide,null);
+  assert.equal(state.boundaryConfirmCount,2);assert.equal(state.direction,'UP');assert.equal(state.lockedDirectionRule,'boundary_return');
+  const repeated=decide(state,current,71301,end+900001);assert.equal(repeated.direction,'UP');assert.equal(repeated.phase,'range');
+});
+
+test('pending breakout confirmation keeps its old lines while blue entry follows rolling boundaries',()=>{
+  const first=confirmationCandidate({breakoutRounds:3});let state=decide(null,first,201);
+  const updated=confirmationCandidate({lower:100,upper:300,breakoutRounds:3,completedRounds:closes([201])});
+  state=decide(state,updated,201,end+300000);
+  assert.equal(state.breakoutReferenceUpper,200);assert.equal(state.breakoutCount,1);
+  const entry=rangeBoundary(state,201);assert.equal(entry.lower,100);assert.equal(entry.upper,300);assert.equal(entry.middleLower,140);assert.equal(entry.middleUpper,260);assert.equal(entry.paused,false);
+  assert.equal(state.boundaryConfirmCount,1);assert.equal(state.boundaryPauseSide,'upper');
 });

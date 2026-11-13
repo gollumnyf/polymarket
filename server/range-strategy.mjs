@@ -1,4 +1,4 @@
-export const RANGE_DEFAULTS=Object.freeze({lookbackHours:2,levelLookbackHours:4,levelLagMinutes:15,edgePercent:20,resumeRounds:2,executionMaxPrice:0.55,breakoutPercent:0.1,breakoutRounds:2});
+export const RANGE_DEFAULTS=Object.freeze({streakReverseEnabled:true,streakReverseRounds:3,lookbackHours:2,levelLookbackHours:4,levelLagMinutes:15,edgePercent:20,resumeRounds:2,executionMaxPrice:0.55,breakoutPercent:0.1,breakoutRounds:2});
 export const RANGE_BUCKET_MS=5000;
 // Body candles need endpoints, not continuous intermediate RTDS samples.
 export const LEVEL_CANDLE_MS=5*60000;
@@ -60,6 +60,8 @@ export function analyzeLevels(bars,config,now,officialRounds=[]){
 export function validateRangeConfig(input={}){
   for(const key of Object.keys(input))if(!Object.hasOwn(RANGE_DEFAULTS,key))throw Error(`不支持的区间参数：${key}`);
   const config={...RANGE_DEFAULTS,...input};
+  if(typeof config.streakReverseEnabled!=='boolean')throw Error('连续同向反向策略开关必须是布尔值');
+  if(!Number.isInteger(config.streakReverseRounds)||config.streakReverseRounds<2||config.streakReverseRounds>48)throw Error('连续同向场数必须是 2 到 48 的整数');
   if(!Number.isInteger(config.resumeRounds)||config.resumeRounds<1||config.resumeRounds>48)throw Error('恢复下单确认场数必须是 1 到 48 的整数');
   if(!Number.isFinite(config.executionMaxPrice)||config.executionMaxPrice<0.5||config.executionMaxPrice>0.99)throw Error('成交价格上限必须为 0.50 到 0.99 之间的数字');
   if(!Number.isFinite(config.edgePercent)||config.edgePercent<0||config.edgePercent>=50)throw Error('每侧边界比例必须大于等于 0 且小于 50%');
@@ -85,10 +87,11 @@ export function classifyRange(candidate,price){
     direction?`当前价格 ${price.toFixed(2)} ${direction==='UP'?'上穿历史最高价':'跌破历史最低价'} ${(direction==='UP'?candidate.upper:candidate.lower).toFixed(2)}，越界期间暂停下单`:'等待当前有效官方报价'};
 }
 
-// Use the same frozen reference as breakout confirmation until that regime ends.
+// Entry always uses the latest rolling support/resistance. Frozen references
+// belong only to breakout confirmation, never to the tradable blue region.
 export function rangeBoundary(state,price){
   const edgePercent=state.edgePercent??RANGE_DEFAULTS.edgePercent,edgeFraction=edgePercent/100,middlePercent=Number((100-2*edgePercent).toFixed(6));
-  const lower=state.breakoutReferenceLower??state.lower,upper=state.breakoutReferenceUpper??state.upper,width=upper-lower;
+  const lower=state.lower,upper=state.upper,width=upper-lower;
   if(!Number.isFinite(price)||!Number.isFinite(lower)||!Number.isFinite(upper)||width<=0)
     return {paused:true,code:'RANGE_BOUNDARY_INVALID',message:'区间上下界未形成有效宽度，暂无中间区域，等待区间更新'};
   const middleLower=lower+width*edgeFraction,middleUpper=upper-width*edgeFraction;
@@ -124,7 +127,7 @@ export function rangeRegime(previous,candidate,vote,spot,configId,now){
   // Old immediate-breakout states cannot bypass the new confirmation requirement.
   if(state.phase!=='range'&&!state.breakoutConfirmedAt)resetRange();
   if(state.breakoutConfirmedAt){
-    if(outside(spot.price,state.breakoutReferenceLower,state.breakoutReferenceUpper)===state.breakoutPendingDirection){
+    if(outside(spot.price,state.breakoutReferenceLower,state.breakoutReferenceUpper)===state.breakoutPendingDirection&&rangeBoundary(state,spot.price).paused){
       state.direction=state.breakoutPendingDirection;
       return finish();
     }
@@ -158,7 +161,7 @@ export function rangeRegime(previous,candidate,vote,spot,configId,now){
     const tied=vote.up===vote.down,selected=tied?(['UP','DOWN'].includes(vote.previousDirection)?(vote.previousDirection==='UP'?'DOWN':'UP'):null):vote.direction;
     if(selected)Object.assign(state,{rangeBaseDirection:selected,rangeBaseDirectionRule:tied?'tie_reverse_previous':'range_majority',lockedPreviousRound:tied?vote.previousRound:null,lockedPreviousDirection:tied?vote.previousDirection:null,lockedPreviousSource:tied?vote.previousSource:null,upCount:vote.up,downCount:vote.down});
   }
-  const lower=state.breakoutReferenceLower??candidate.lower,upper=state.breakoutReferenceUpper??candidate.upper,width=upper-lower,edgeFraction=state.edgePercent/100;
+  const lower=candidate.lower,upper=candidate.upper,width=upper-lower,edgeFraction=state.edgePercent/100;
   const edge=spot.price>upper||(width>0&&spot.price>=upper-width*edgeFraction)?'DOWN':spot.price<lower||(width>0&&spot.price<=lower+width*edgeFraction)?'UP':null;
   state.phase='range';state.direction=edge??state.rangeBaseDirection??null;
   state.lockedDirectionRule=edge?'range_edge_reversion':state.rangeBaseDirectionRule??null;

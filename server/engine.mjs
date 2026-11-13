@@ -279,6 +279,8 @@ export class Engine extends EventEmitter {
     if(this.now()-book.fetchedAt>6000){this.blockEntry(mode,start,`报价完成时盘口过期：获取距今 ${this.now()-book.fetchedAt} 毫秒 > 允许 6000 毫秒`,{code:'BOOK_STALE_AFTER_QUOTE',dataAgeMs:this.now()-book.fetchedAt,maxAgeMs:6000},book);return;}
     const finalGuard=this.entryGuard(account,start);
     if(finalGuard){this.blockEntry(mode,start,finalGuard.message,{code:finalGuard.code},book);return;}
+    const quoteGuard=this.quoteGuard(quote);
+    if(quoteGuard){this.blockEntry(mode,start,quoteGuard.message,{code:quoteGuard.code},book);return;}
     if(this.entryDirection(account,start)!==direction){this.blockEntry(mode,start,'成交计算后方向发生变化，取消本次买入，等待重新检查',{code:'SIGNAL_CHANGED_AFTER_QUOTE'},book);return;}
     const outcome = this.market.outcomes.find(o => o.direction === direction);
     const order = { id: randomUUID(), mode, session: account.session, round: start, end: start + 300,
@@ -300,7 +302,7 @@ export class Engine extends EventEmitter {
       try {
         const result = await this.venue.buy(order, quote, () => this.store.account('live').running &&
           roundStart(this.now()) === start && this.now() / 1000 - start <= account.config.entryWindow &&
-          this.entryDirection(this.store.account('live'),start) === direction && !this.alignmentReason(this.store.account('live'),start,direction));
+          this.entryDirection(this.store.account('live'),start) === direction && !this.alignmentReason(this.store.account('live'),start,direction) && !this.quoteGuard(quote));
         if (!result.ok) {
           this.store.saveOrder({ ...order, status: 'rejected', note: safeError(result.message) });
           this.runtimeIssue(mode,`订单被拒绝：${safeError(result.message)}；本场不重复提交，下一场继续运行`); return;
@@ -319,6 +321,7 @@ export class Engine extends EventEmitter {
   requiresCurrentOpening(){return true;}
   orderSignalFields(){return {};}
   quote(book,budget,config,schedule){return simulateFill(book,budget,config,schedule);}
+  quoteGuard(){return null;}
   alignmentReason(account,start,direction) {
     if (account.config.reverseSignal||account.config.followPreviousAtOpen||!account.config.sameDirectionOnly) return null;
     const previous=this.store.roundPrediction(start-300);

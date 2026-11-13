@@ -1,53 +1,113 @@
-﻿import React, { useEffect, useState } from 'react';
-import { Activity, ArrowDown, ArrowUp, Play, Square, ChevronRight, Clock3 } from 'lucide-react';
+import React,{useEffect,useRef,useState} from 'react';
+import {Activity,ChevronRight,ChevronDown} from 'lucide-react';
 import Sidebar from './Sidebar.jsx';
 import HistoryPanel from './HistoryPanel.jsx';
-const money = value => value == null || !Number.isFinite(Number(value)) ? '-' : `$${Number(value).toFixed(4)}`;
-const pct = value => value == null || !Number.isFinite(Number(value)) ? '-' : `${(Number(value) * 100).toFixed(2)}%`;
+import GamMarket from './GamMarket.jsx';
+import AccountStats from './AccountStats.jsx';
+import StrategyControl from './StrategyControl.jsx';
+import {apiPath,latestSnapshot,submitAction,startWithAmount} from './api.mjs';
 
-export default function GamMvPage() {
-  const [tab, setTab] = useState('orders');
-  const [state, setState] = useState(null);
-  const [token, setToken] = useState('');
-  const [error, setError] = useState('');
-  const api = path => `/gam/api/${path}`;
-  async function load() {
-    try {
-      const response = await fetch(api('state'));
-      if (!response.ok) throw Error('鏈嶅姟鏆備笉鍙敤');
-      const data = await response.json(); setState(data); setToken(data.controlToken);
-    } catch (e) { setError(e.message); }
+const money=value=>Number.isFinite(value)?'$'+value.toFixed(4):'—';
+const pct=value=>Number.isFinite(value)?(value*100).toFixed(2)+'%':'—';
+const number=(value,digits=4)=>Number.isFinite(value)?value.toFixed(digits):'—';
+
+export default function GamMvPage(){
+  const [tab,setTab]=useState('orders');
+  const [state,setState]=useState(null);
+  const [token,setToken]=useState('');
+  const [connected,setConnected]=useState(false);
+  const [connectionError,setConnectionError]=useState('');
+  const [error,setError]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [clock,setClock]=useState(Date.now());
+  const [offset,setOffset]=useState(0);
+  const [historyKey,setHistoryKey]=useState(0);
+  const [base,setBase]=useState('10');
+  const [editingBase,setEditingBase]=useState(false);
+  const actionBusy=useRef(false);
+
+  useEffect(()=>{
+    let stopped=false,retry,controller;
+    const accept=data=>{
+      if(stopped)return;
+      setState(current=>latestSnapshot(current,data));
+      setConnectionError('');
+    };
+    async function load(){
+      clearTimeout(retry);controller?.abort();controller=new AbortController();
+      try{
+        const response=await fetch(apiPath('state'),{cache:'no-store',signal:controller.signal});
+        if(!response.ok)throw Error('服务暂不可用');
+        const data=await response.json();
+        if(!stopped){accept(data);setToken(data.controlToken);setOffset(data.time-Date.now());}
+      }catch(e){
+        if(!stopped&&e.name!=='AbortError'){setConnectionError(e.message);retry=setTimeout(load,3000);}
+      }
+    }
+    load();
+    const events=new EventSource(apiPath('events'));
+    events.onopen=()=>{setConnected(true);load();};
+    events.onmessage=event=>{
+      try{accept(JSON.parse(event.data));setConnected(true);}
+      catch{setConnected(false);setConnectionError('状态数据读取失败，等待重新同步');}
+    };
+    events.onerror=()=>{setConnected(false);setConnectionError('服务连接中断，正在重新连接');};
+    const timer=setInterval(()=>setClock(Date.now()),1000);
+    return ()=>{stopped=true;clearTimeout(retry);controller?.abort();events.close();clearInterval(timer);};
+  },[]);
+
+  async function action(path,body={}){
+    if(actionBusy.current)return false;
+    actionBusy.current=true;setBusy(true);setError('');
+    try{
+      const data=typeof path==='function'?await path():await submitAction(path,body,token);
+      setState(current=>latestSnapshot(current,data));setToken(data.controlToken);
+      return true;
+    }catch(e){setError(e.message);return false;}
+    finally{actionBusy.current=false;setBusy(false);}
   }
-  async function action(path) {
-    try {
-      const response = await fetch(api(path), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Control-Token': token }, body: '{}' });
-      const data = await response.json(); if (!response.ok) throw Error(data.error); setState(data); await load();
-    } catch (e) { setError(e.message); }
+  async function clearHistory(kind){
+    const text=kind==='orders'?'清空 GAM 已结束的模拟交易记录？待结算订单、余额和资金序列保留。':'清空 GAM 模拟盘的运行日志？';
+    if(window.confirm(text)&&await action('paper/'+kind+'/clear'))setHistoryKey(value=>value+1);
   }
-  useEffect(() => { load(); const events = new EventSource(api('events')); events.onmessage = event => setState(JSON.parse(event.data)); events.onerror = () => setError('绛夊緟妯℃嫙鏈嶅姟杩炴帴'); return () => events.close(); }, []);
-  const signal = state?.gam; const account = state?.accounts?.paper;
-  const edge = signal?.direction === 'UP' ? signal.fairUp - signal.upCost : signal?.direction === 'DOWN' ? signal.fairDown - signal.downCost : -1;
-  const ready = edge >= (state?.gamModel?.minEdge ?? 0.02);
-  return <div className="app"><Sidebar active="gam" onNavigate={page => location.assign('/' + page)} /><div className="main-shell">
-    <header className="topbar"><div className="breadcrumb">Trading desk <ChevronRight size={13} /> <strong>GAM mean variance</strong></div><span className="connection healthy"><i />Service connected</span></header>
-    <main><section className="page-heading"><div><div className="eyebrow">YOUR STRATEGY. YOUR RULES.</div><h1>GAM mean variance <span className="mode-label"><Activity size={12} /> PAPER TRADING</span></h1><p>BTC state estimation, residual control, and paired arbitrage.</p></div></section>
-      {error && <div className="data-warning">{error}</div>}
-      <section className="stats-grid"><div className="stat-card"><div className="stat-label">妯℃嫙鍙敤浣欓</div><div className="stat-value">{money(account?.balance)}</div></div><div className="stat-card"><div className="stat-label">Up 鍏厑浠峰€</div><div className="stat-value">{pct(signal?.fairUp)}</div></div><div className="stat-card"><div className="stat-label">Down 鍏厑浠峰€</div><div className="stat-value">{pct(signal?.fairDown)}</div></div><div className="stat-card"><div className="stat-label">鐩爣娈嬪樊</div><div className="stat-value">{pct(signal?.targetResidual)}</div></div></section>
-      <details className="panel range-panel" open><summary className="panel-heading range-summary"><h2><Activity size={17} />GAM model state</h2><span className="range-summary-status">{ready ? `BUY ${signal.direction}` : signal?.message || "WAIT"}</span></summary><div className="range-panel-body"><div className="range-metrics"><div><span>Entry condition</span><strong className={ready ? "green" : ""}>{ready ? "READY" : "WAITING"}</strong></div><div><span>Up / Down fair value</span><strong>{pct(signal?.fairUp)} / {pct(signal?.fairDown)}</strong></div><div><span>Target residual</span><strong>{pct(signal?.targetResidual)}</strong></div><div><span>Paired arbitrage</span><strong>{signal?.arbitrage?.available ? "AVAILABLE" : "WAITING"}</strong></div></div><div className="range-observations"><span>d <b>{Number(signal?.d || 0).toFixed(5)}</b></span><span>v <b>{Number(signal?.v || 0).toFixed(5)}</b></span><span>tau <b>{Number(signal?.tau || 0).toFixed(1)} sec</b></span><span>OFI <b>{Number(signal?.ofi || 0).toFixed(3)}</b></span><span>z <b>{Number(signal?.z || 0).toFixed(4)}</b></span></div><p className="range-data-note">BUY when fair value minus the matching ask is at least {pct(state?.gamModel?.minEdge)} and all risk checks pass.</p></div></details>
-      <div className="trading-grid"><div className="market-column"><GamMarket state={state} signal={signal} /><section className="signal-bar"><div className="signal-icon"><Activity size={18} /></div><div><span className="mini-label">当前策略信号</span><p><b>{ready ? `买入 ${signal.direction}` : '等待'}</b><span>{signal?.message || '等待有效行情和入场边际'}</span></p></div></section></div><aside className="strategy-column"><section className="panel strategy-panel"><div className="panel-heading"><h2>策略控制</h2><span className="version-tag">GAM + MV</span></div><p>当前信号：<b>{signal?.message || '等待行情'}</b></p><div className="button-row"><button className="button primary" onClick={() => action('paper/start')}><Play size={15} />启动策略</button><button className="button secondary" onClick={() => action('paper/stop')}><Square size={15} />暂停策略</button></div></section></aside></div>
-      <HistoryPanel mode="paper" tab={tab} setTab={setTab} account={account} currentRound={Math.floor(Date.now() / 300000) * 300} connected={true} spot={state?.spot} now={Date.now()} spotError={state?.errors?.spot} />
-    </main></div></div>;
-}
 
-function GamMarket({ state, signal }) {
-  const now = state?.time || Date.now();
-  const round = Math.floor(now / 300000) * 300;
-  const left = Math.max(0, round + 300 - Math.floor(now / 1000));
-  const ticks = (state?.ticks || []).filter(point => point.time >= round * 1000).slice(-180);
-  const values = ticks.map(point => Number(point.price)).filter(Number.isFinite);
-  const min = Math.min(...values, Number(state?.spot?.price) || 0); const max = Math.max(...values, Number(state?.spot?.price) || 1); const span = Math.max(1, max - min);
-  const points = values.map((value, index) => `${(index / Math.max(1, values.length - 1)) * 100},${100 - ((value - min) / span) * 82 - 9}`).join(' ');
-  const book = state?.books || {};
-  return <section className="panel market-panel"><div className="market-heading"><div className="market-identity"><span className="bitcoin">₿</span><div><h2>Bitcoin <span>UP / DOWN</span></h2><p>BTC 公允价值与盘口 · 5 分钟市场</p></div></div><span className="round-link">第 {round} 场</span></div><div className="round-timing"><span className="active-label"><i />当前场次</span><span className="round-slug">#{round}</span><span className="countdown"><Clock3 size={14} /> 距离结束 <strong>{String(Math.floor(left / 60)).padStart(2, '0')}:{String(left % 60).padStart(2, '0')}</strong></span></div><div className="round-progress"><span style={{ width: `${Math.min(100, ((300 - left) / 3))}%` }} /></div><div className="chart-toolbar"><div><span className="mini-label">BTC 实时参考价</span><div className="btc-value">{money(state?.spot?.price)}</div><div className="price-caption">本场起始价 {money(state?.spot?.currentOpen)}</div></div><div className="chart-range"><button className="active">本场</button><button>近 30 分钟</button></div></div><div className="gam-chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points} fill="none" stroke="#72c9a5" strokeWidth="1.5" vectorEffect="non-scaling-stroke" /></svg></div><div className="chart-legend"><span><i className="legend-price" /> Chainlink 实时参考价</span><span><i className="legend-reference" /> 本场起始价 <b>{money(state?.spot?.currentOpen)}</b></span></div><div className="outcome-grid"><div className="outcome up"><ArrowUp size={20} /><div><strong>看涨 UP</strong><small>卖一 {money(book.UP?.asks?.[0]?.price || signal?.upCost)}</small></div><div className="outcome-price">{pct(signal?.fairUp)}<span>公允价值</span></div></div><div className="outcome down"><ArrowDown size={20} /><div><strong>看跌 DOWN</strong><small>卖一 {money(book.DOWN?.asks?.[0]?.price || signal?.downCost)}</small></div><div className="outcome-price">{pct(signal?.fairDown)}<span>公允价值</span></div></div></div></section>;
-}
+  const now=clock+offset,round=Math.floor(now/300000)*300;
+  const account=state?.accounts?.paper,signal=state?.gam;
+  const fresh=connected&&state?.spot?.round===round&&now-state.spot.at>=0&&now-state.spot.at<=6000&&!state?.errors?.spot;
+  const direction=fresh&&!signal?.code?signal?.direction:null;
+  const message=!connected?'等待服务连接':!fresh?'等待本场新鲜官方报价':signal?.message||'等待模型信号';
+  const blocked=account?.entryBlock?.round===round?account.entryBlock:null;
+  const baseLocked=Boolean(account?.running||account?.activeOrders?.length);
+  const baseDirty=account&&Number(base)!==account.config.baseAmount;
+  useEffect(()=>{
+    if(account&&(!editingBase||baseLocked))setBase(String(account.config.baseAmount));
+    if(baseLocked)setEditingBase(false);
+  },[account?.config.baseAmount,editingBase,baseLocked]);
+  async function toggleStrategy(){
+    if(account.running)return action('paper/stop');
+    if(await action(()=>startWithAmount('paper',Number(base),account.config,token)))setEditingBase(false);
+  }
 
+  return <div className="app"><Sidebar active="gam"/><div className="main-shell">
+    <header className="topbar"><div className="breadcrumb">交易工作台 <ChevronRight size={13}/><strong>GAM 均值方差</strong></div><span className={'connection '+(connected?'healthy':'')}><i/>{connected?'服务已连接':'正在连接服务'}</span></header>
+    <main>
+      <section className="page-heading"><div><div className="eyebrow">GAM · MEAN VARIANCE</div><h1>GAM 均值方差 <span className="mode-label"><Activity size={12}/>模拟交易</span></h1><p>观察模型公允价值、买入边际与均值方差指标。</p></div></section>
+      {(error||connectionError)&&<div className="data-warning" role="alert">{error||connectionError}</div>}
+      <AccountStats account={account}/>
+      <div className="trading-grid"><div className="market-column">
+      <details className="panel range-panel">
+        <summary className="panel-heading range-summary"><h2><Activity size={17}/>GAM 模型状态</h2><span className="range-summary-status">{direction?'模型偏向 '+direction:message}</span><span className="range-toggle"><span className="range-expand-label">展开</span><span className="range-collapse-label">收起</span><ChevronDown size={16}/></span></summary>
+        <div className="range-panel-body">
+          <div className="range-metrics"><div><span>模型边际</span><strong className={direction?'green':''}>{direction?'达到阈值':'等待'}</strong></div><div><span>UP / DOWN 公允价值</span><strong>{pct(signal?.fairUp)} / {pct(signal?.fairDown)}</strong></div><div><span>目标残差</span><strong>{pct(signal?.targetResidual)}</strong></div><div><span>双边报价合计（未扣手续费）</span><strong>{money(signal?.arbitrage?.totalCost)}</strong></div></div>
+          <div className="range-observations"><span>相对起始价 d <b>{number(signal?.d,5)}</b></span><span>波动输入 v <b>{number(signal?.v,5)}</b></span><span>剩余秒数 τ <b>{number(signal?.tau,1)}</b></span><span>订单流输入 OFI <b>{number(signal?.ofi,3)}</b></span><span>模型得分 z <b>{number(signal?.z)}</b></span></div>
+          <p className="range-data-note">模型公允价值减去对应卖一价达到 {pct(state?.gamModel?.minEdge)} 时产生方向信号，实际买入仍须通过行情、盘口与账户限制。目标残差和双边报价目前仅用于展示。</p>
+        </div>
+      </details>
+      <GamMarket state={state} now={now} connected={connected}/><section className={'signal-bar '+(direction?.toLowerCase()||'neutral')}><div className="signal-icon"><Activity size={18}/></div><div><span className="mini-label">当前模型信号</span><p><b>{direction||'等待'}</b><span>{message}</span></p></div></section></div>
+        <StrategyControl account={account} busy={busy} connected={connected} token={token} base={base} baseLocked={baseLocked} baseDirty={baseDirty} setEditingBase={setEditingBase} setBase={setBase} onToggle={toggleStrategy} title="GAM 均值方差马丁策略" entryTime="开盘立即检测" entryMode="GAM 估值边际 · 买价 ≤ 0.50"/>
+      </div>
+      {blocked&&<p className="range-data-note">最近一次未买入原因：{blocked.message}</p>}
+      <HistoryPanel onVisibility={(kind,hidden)=>action(`paper/${kind}/visibility`,{hidden})} key={historyKey} mode="paper" tab={tab} setTab={setTab} account={account} currentRound={round} connected={connected} spot={state?.spot} now={now} spotError={state?.errors?.spot} busy={busy} onClear={clearHistory}/>
+    </main>
+  </div></div>;
+}

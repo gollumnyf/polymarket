@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS orders (
   shares REAL, notional REAL, fee REAL, cost REAL, price REAL, price_limit REAL,
   fee_estimated INTEGER CHECK(fee_estimated IN (0,1)),
   payout REAL, pnl REAL, venue_order_id TEXT, note TEXT,
+  is_hide INTEGER NOT NULL DEFAULT 0 CHECK(is_hide IN (0,1)),
   UNIQUE(mode,round)
 );
 CREATE TABLE IF NOT EXISTS order_rounds (
@@ -82,7 +83,8 @@ CREATE TABLE IF NOT EXISTS order_book_levels (
 );
 CREATE TABLE IF NOT EXISTS logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL,
-  mode TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL
+  mode TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL,
+  is_hide INTEGER NOT NULL DEFAULT 0 CHECK(is_hide IN (0,1))
 );
 CREATE TABLE IF NOT EXISTS log_clear_positions (
   mode TEXT PRIMARY KEY CHECK(mode IN ('paper','live')),

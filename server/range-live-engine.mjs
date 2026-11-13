@@ -37,6 +37,7 @@ export class RangeLiveEngine extends RangeEngine {
     // Regime/config IDs belong to their own database; copy typed decision evidence.
     const {id,...shared}=this.source.store.rangeConfig();
     const config=this.store.saveRangeConfig(shared);
+    if(result.streakSignal)return {...result,streakSignal:{...result.streakSignal,configId:config.id}};
     const state=this.store.saveRangeState({...result.rangeSignal,configId:config.id});
     return {...result,rangeSignal:{...result.rangeSignal,...state}};
   }

@@ -108,6 +108,13 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
       res.json(engine.store.historyPage(req.params.mode,kind,{page,pageSize,status,anchor}));
     } catch (error) { next(error); }
   });
+  for(const kind of ['orders','logs'])app.post('/api/:mode/'+kind+'/visibility',(req,res,next)=>{
+    try{
+      if(typeof req.body?.hidden!=='boolean')throw new Error('hidden 必须为布尔值');
+      const changed=engine.store.setHistoryHidden(req.params.mode,kind,req.body.hidden);
+      engine.broadcast();res.json({ok:true,changed});
+    }catch(error){next(error);}
+  });
   app.post('/api/:mode/start', async (req, res, next) => {
     try { await engine.start(req.params.mode); res.json({ ok: true }); } catch (e) { next(e); }
   });
@@ -131,13 +138,14 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     try { engine.attachOrderId(req.body?.id, req.body?.venueOrderId); res.json({ ok: true }); } catch (e) { next(e); }
   });
   app.get('/api/:mode/export', (req, res) => {
-    const keys = ['id', 'round', 'createdAt', 'settledAt', 'direction', 'budget', 'cost', 'price', 'shares', 'fee', 'feeEstimated', 'status', 'pnl', 'venueOrderId',
+    const keys = ['id', 'isHide', 'round', 'createdAt', 'settledAt', 'direction', 'budget', 'cost', 'price', 'shares', 'fee', 'feeEstimated', 'status', 'pnl', 'venueOrderId',
       'predictionOutcome','predictionWon','predictionOpen','predictionClose','predictionAt','predictionMatches','predictionSource','predictionPriceAt'];
     if(engine instanceof MomentumEngine)keys.push('openingSource','oracleWindow','previousAt','previousPrice','latestAt','latestPrice');
-    if(engine instanceof RangeEngine)keys.push('resumeRounds','executionMaxPrice','boundaryPauseRound','boundaryConfirmCount','boundaryConfirmLastRound','boundaryConfirmLastClose','boundaryConfirmLastSource','boundaryConfirmLower','boundaryConfirmUpper','boundaryPauseSide','boundaryPausedAt','boundaryResumeSide','boundaryResumedAt','boundaryResumePrice','boundaryResumeThreshold','edgePercent','rp01Enabled','rp01ReleaseId','phase','lower','upper','upCount','downCount','windowStart','windowEnd','formedAt','breakoutSince','levelTimeframeMinutes','levelLookbackHours','levelLagMinutes','levelWindowStart','levelWindowEnd','supportSource','resistanceSource','directionRule','decisionUpCount','decisionDownCount','tiePreviousRound','tiePreviousDirection','tiePreviousSource','actualLower','actualUpper','lockedDirectionRule','lockedPreviousRound','lockedPreviousDirection','lockedPreviousSource','directionSelectedAt','tradeFromRound','formedFrom');
+    if(engine instanceof RangeEngine)keys.push('streakFirstRound','streakLastRound','streakRoundsRequired','streakMarketDirection','streakBuyDirection','streakObservedAt','resumeRounds','executionMaxPrice','boundaryPauseRound','boundaryConfirmCount','boundaryConfirmLastRound','boundaryConfirmLastClose','boundaryConfirmLastSource','boundaryConfirmLower','boundaryConfirmUpper','boundaryPauseSide','boundaryPausedAt','boundaryResumeSide','boundaryResumedAt','boundaryResumePrice','boundaryResumeThreshold','edgePercent','rp01Enabled','rp01ReleaseId','phase','lower','upper','upCount','downCount','windowStart','windowEnd','formedAt','breakoutSince','levelTimeframeMinutes','levelLookbackHours','levelLagMinutes','levelWindowStart','levelWindowEnd','supportSource','resistanceSource','directionRule','decisionUpCount','decisionDownCount','tiePreviousRound','tiePreviousDirection','tiePreviousSource','actualLower','actualUpper','lockedDirectionRule','lockedPreviousRound','lockedPreviousDirection','lockedPreviousSource','directionSelectedAt','tradeFromRound','formedFrom');
     const cell = value => `"${String(value ?? '').replace(/^[=+@-]/, "'$&").replaceAll('"', '""')}"`;
     const rows = engine.store.orders(req.params.mode, -1).map(order=>({...order,...order.momentumSignal,...order.rangeSignal,
       id:order.id,round:order.round,createdAt:order.createdAt,direction:order.direction,price:order.price,
+      streakFirstRound:order.streakSignal?.firstRound,streakLastRound:order.streakSignal?.lastRound,streakRoundsRequired:order.streakSignal?.roundsRequired,streakMarketDirection:order.streakSignal?.marketDirection,streakBuyDirection:order.streakSignal?.direction,streakObservedAt:order.streakSignal?.observedAt,
       predictionOutcome:order.prediction?.outcome,predictionWon:order.prediction?.won,
       predictionOpen:order.prediction?.open,predictionClose:order.prediction?.close,
       predictionAt:order.prediction?.observedAt,predictionMatches:order.prediction?.matches,
@@ -147,7 +155,7 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     res.send('\uFEFF' + [keys.join(','), ...rows.map(o => keys.map(k => cell(o[k])).join(','))].join('\r\n'));
   });
   app.get('/api/:mode/logs/export',(req,res)=>{
-    const keys=['id','time','mode','level','message'];
+    const keys=['id','is_hide','time','mode','level','message'];
     const cell=value=>`"${String(value ?? '').replace(/^[=+@-]/,"'$&").replaceAll('"','""')}"`;
     const rows=engine.store.logs(req.params.mode,-1);
     res.setHeader('Content-Type','text/csv; charset=utf-8');

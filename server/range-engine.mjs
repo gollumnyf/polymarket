@@ -1,3 +1,4 @@
+import {resolveStreak} from './range-streak.mjs';
 import {MomentumEngine} from './momentum.mjs';
 import {normalizeHistoricalRound} from './history.mjs';
 import {roundStart,simulateFill,validateConfig,money} from './strategy.mjs';
@@ -13,7 +14,7 @@ export class RangeEngine extends MomentumEngine {
   backfillMarketHistory(){
     if(this.closing||!this.venue.fetch||!Number.isFinite(this.spot?.windowSeconds))return this.backfillTask;
     const config=this.store.rangeConfig(),window=this.spot.windowSeconds,end=roundStart(this.now());
-    const state=this.store.rangeState(),start=Math.min(levelWindow(this.now(),config.levelLookbackHours,config.levelLagMinutes).start/1000,end-config.lookbackHours*3600,state?.breakoutPendingDirection&&!state.breakoutConfirmedAt?state.breakoutStartRound??end:end,state?.boundaryPauseSide?Math.max(state.boundaryPauseRound??end,end-config.resumeRounds*300):end);
+    const state=this.store.rangeState(),start=Math.min(levelWindow(this.now(),config.levelLookbackHours,config.levelLagMinutes).start/1000,end-config.lookbackHours*3600,end-(config.streakReverseEnabled?config.streakReverseRounds:0)*300,state?.breakoutPendingDirection&&!state.breakoutConfirmedAt?state.breakoutStartRound??end:end,state?.boundaryPauseSide?Math.max(state.boundaryPauseRound??end,end-config.resumeRounds*300):end);
     const known=new Set(this.store.marketPrices(window,start,end).map(item=>item.round));
     for(let round=end-300;round>=start;round-=300){
       const key=window+':'+round;
@@ -124,6 +125,8 @@ export class RangeEngine extends MomentumEngine {
     const spot=this.spot,now=this.now();
     if(spot?.sourceId!=='polymarket'||spot.round!==roundStart(now)||!Number.isFinite(spot.windowSeconds))return reject('RANGE_OFFICIAL_PRICE_MISSING','等待本场同预言机窗口的 Polymarket 官方价格');
     if(!Number.isFinite(spot.price)||spot.price<=0||!Number.isFinite(spot.at)||spot.at>now||now-spot.at>6000)return reject('RANGE_PRICE_STALE','当前官方报价无效或超过 6000 毫秒新鲜度上限，继续等待更新');
+    const activeConfig=this.store.rangeConfig();
+    const streak=resolveStreak(this.store,activeConfig,spot.windowSeconds,roundStart(now),now,round=>this.marketRoundOutcome(round,spot.windowSeconds));
     const {config,candidate:analysisCandidate,vote}=this.analysis();
     const completedRounds=[];
     const confirmationStart=Math.min(previous?.breakoutStartRound!=null&&!previous.breakoutConfirmedAt?previous.breakoutStartRound:Infinity,previous?.boundaryPauseSide?Math.max(previous.boundaryPauseRound??roundStart(now),roundStart(now)-config.resumeRounds*300):Infinity);
@@ -151,11 +154,16 @@ export class RangeEngine extends MomentumEngine {
         levelAnalysis:{...candidate.levelAnalysis,ready:true,start:previous.levelWindowStart,end:previous.levelWindowEnd}},spot.price);
     }
     let state=rangeRegime(previous,candidate,vote,spot,config.id,now);
-    if(!state)return {...reject(candidate.code||'RANGE_NOT_STABLE',candidate.message),candidate,vote};
+    if(!state)return {...reject(candidate.code||'RANGE_NOT_STABLE',candidate.message),candidate,vote,lockedStreak:streak};
     state=this.store.saveRangeState(state);
     const boundary=rangeBoundary(state,spot.price);
-    if(boundary.paused)return {direction:null,code:boundary.code,message:boundary.message,state,candidate,vote,usingSavedRange,boundary};
-    if(state.boundaryPauseSide)return {direction:null,code:'RANGE_RETURN_CONFIRMING',message:`已返回蓝色区域，等待连续 ${config.resumeRounds} 场收盘确认：当前 ${state.boundaryConfirmCount}/${config.resumeRounds} 场；收盘须 > ${boundary.middleLower.toFixed(2)} 且 < ${boundary.middleUpper.toFixed(2)}，等于边界不计入。确认后从${state.boundaryPauseSide==='lower'?'下支撑侧买 UP':'上压力侧买 DOWN'}；下单前仍须位于蓝色区域`,state,candidate,vote,usingSavedRange,boundary};
+    if(boundary.paused)return {direction:null,code:boundary.code,message:streak&&boundary.code!=='RANGE_BOUNDARY_INVALID'?`连续同向已锁定买 ${streak.direction}，但当前价 ${spot.price.toFixed(2)} 不在蓝色区域（须 > ${boundary.middleLower.toFixed(2)} 且 < ${boundary.middleUpper.toFixed(2)}），暂停新单；返回后仍需连续 ${config.resumeRounds} 场收盘确认`:boundary.message,state,candidate,vote,usingSavedRange,boundary,lockedStreak:streak};
+    if(state.boundaryPauseSide)return {direction:null,code:'RANGE_RETURN_CONFIRMING',message:`已返回蓝色区域，等待连续 ${config.resumeRounds} 场收盘确认：当前 ${state.boundaryConfirmCount}/${config.resumeRounds} 场；收盘须 > ${boundary.middleLower.toFixed(2)} 且 < ${boundary.middleUpper.toFixed(2)}，等于边界不计入。确认后${streak?`按连续同向锁定买 ${streak.direction}`:state.boundaryPauseSide==='lower'?'从下支撑侧买 UP':'从上压力侧买 DOWN'}；下单前仍须位于蓝色区域`,state,candidate,vote,usingSavedRange,boundary,lockedStreak:streak};
+    if(streak){
+      const estimated=streak.samples.filter(sample=>sample.source!=='official').length;
+      return {direction:streak.direction,code:null,directionRule:'market_streak_reverse',streakSignal:streak,state,candidate,vote,usingSavedRange,boundary,
+        message:`连续 ${streak.roundsRequired} 场市场结果同为 ${streak.marketDirection}（#${streak.firstRound}–#${streak.lastRound}，${estimated} 场使用预计结果），开盘锁定反向买 ${streak.direction}，后续每场沿用；再次出现连续同向时重新选向。仅在蓝色区域内且恢复确认完成后下单，不设策略买价上限；每场一单和资金限额仍有效`};
+    }
     if(!state.direction&&vote.complete&&vote.up===vote.down)return {direction:null,code:'RANGE_TIE_PREVIOUS_UNAVAILABLE',
       message:`区间初次选向同票（UP ${vote.up} / DOWN ${vote.down}），上一场 #${vote.previousRound} ${vote.previousSource==='official_void'?'官方判定作废，没有涨跌方向':'尚无有效官方结果和预测方向'}，继续等待`,state,candidate,vote};
     if(!state.direction)return {direction:null,code:'RANGE_VOTE_INCOMPLETE',message:
@@ -178,12 +186,13 @@ export class RangeEngine extends MomentumEngine {
   requiresCurrentOpening(){return false;}
   entryGuard(){
     const signal=this.signal();if(signal.code)return signal;
-    if(signal.state.tradeFromRound&&roundStart(this.now())<signal.state.tradeFromRound)return {code:'RANGE_BREAKOUT_NEXT_ROUND',message:`前次突破后的最早执行场次为 #${signal.state.tradeFromRound}，当前方向 ${signal.direction}；从该场开盘开始买入，本场不追单`};
+    if(signal.directionRule!=='market_streak_reverse'&&signal.state.tradeFromRound&&roundStart(this.now())<signal.state.tradeFromRound)return {code:'RANGE_BREAKOUT_NEXT_ROUND',message:`前次突破后的最早执行场次为 #${signal.state.tradeFromRound}，当前方向 ${signal.direction}；从该场开盘开始买入，本场不追单`};
     if(!this.spot.conditionId||this.spot.conditionId!==this.market?.conditionId)return {code:'RANGE_MARKET_MISMATCH',message:'当前官方报价与盘口不属于同一场市场，继续等待匹配数据'};
     return null;
   }
   orderSignalFields(){
     const decision=this.signal();
+    if(decision.streakSignal)return {signalRule:'range_streak_reverse',referencePrice:this.spot.currentOpen??null,signalPrice:this.spot.price,streakSignal:{...decision.streakSignal,observedAt:this.now()}};
     return {signalRule:'range_regime',referencePrice:this.spot.currentOpen??null,signalPrice:this.spot.price,
       rangeSignal:{...decision.state,price:this.spot.price,priceAt:this.spot.at,directionRule:decision.directionRule,
         decisionUpCount:decision.state.upCount,decisionDownCount:decision.state.downCount,
@@ -192,12 +201,23 @@ export class RangeEngine extends MomentumEngine {
         tiePreviousSource:decision.state.lockedPreviousSource}};
   }
   quote(book,budget,config,schedule){
+    if(this.analysis().config.streakReverseEnabled&&this.signal().streakSignal){
+      const tick=Number(book.tickSize),cap=Number.isFinite(tick)&&tick>0?Math.min(1-Number.EPSILON,Number(((Math.ceil(1/tick)-1)*tick).toPrecision(15))):1-Number.EPSILON;
+      const quote=simulateFill(book,budget,{...config,maxPrice:cap},schedule,{strictTicks:true,ignoreSlippage:true});
+      return {...quote,priceLimit:Math.min(quote.priceLimit,cap),streakUnrestricted:true};
+    }
     const valid=book.asks.filter(level=>Number.isFinite(Number(level.size))&&Number(level.size)>0).map(level=>Number(level.price)).filter(price=>Number.isFinite(price)&&price>0&&price<1),best=Math.min(...valid);
     if(Number.isFinite(best)&&best>=0.5)throw Object.assign(Error(`所选方向卖一 ${best.toFixed(6)} 不低于 0.500000；此策略要求触发卖一价 < 0.50，本次不买入`),{code:'RANGE_PRICE_NOT_BELOW_HALF',evidence:{budget,bestAsk:best,maxPrice:0.5}});
     const tick=Number(book.tickSize),maximum=this.analysis().config.executionMaxPrice;
     const cap=Number.isFinite(tick)&&tick>0?Math.min(maximum,Math.floor((maximum+1e-10)/tick)*tick):maximum;
     const quote=simulateFill(book,budget,{...config,maxPrice:cap},schedule,{strictTicks:true,ignoreSlippage:true});
     return {...quote,priceLimit:Math.min(quote.priceLimit,cap)};
+  }
+  quoteGuard(quote){
+    if(!quote.streakUnrestricted)return null;
+    const signal=this.signal();
+    if(signal.code)return signal;
+    return !signal.streakSignal?{code:'STREAK_POLICY_CHANGED',message:'连续同向反买依据已被更新，取消本次不限策略买价的报价，按最新规则重新检查'}:null;
   }
   configure(mode,input){
     if(mode!=='paper')throw Error('此页面仅支持模拟交易');

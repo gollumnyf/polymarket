@@ -717,7 +717,7 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
 .history-key.up { background: #6cdeb3; }
 .history-key.down { background: #f18490; }
 .round-history-dots { display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: 2px; max-width: 600px; margin-top: 7px; }
-.round-marker { display: grid; place-items: center; min-width: 0; padding: 0; border-radius: 4px; cursor: pointer; text-decoration: none; height: 22px; }
+.round-marker { display: grid; place-items: center; min-width: 0; padding: 0; border-radius: 4px; cursor: pointer; text-decoration: none; height: 28px; }
 .history-load-status { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px 20px; font-size: 12px; color: #8997a7; }
 .history-load-status.error { color: #f18490; }
 .history-pagination { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #252e39; color: #8997a7; font-size: 12px; }

@@ -89,3 +89,22 @@ SELECT source, time, price FROM ticks
 WHERE source = 'polymarket' AND time BETWEEN 1800000000000 AND 1800000300000
 ORDER BY time;
 ```
+
+## 连续同向反买
+
+`range_configs.streak_reverse_enabled`、`streak_reverse_rounds` 保存开关及连续场数；升级为当前配置创建默认启用、3 场的新版本，历史配置保留关闭状态。
+
+- `range_streak_events`：按配置与预言机窗口保存触发、官方核对及失效事件，包括连续场数、首末场次、市场方向、反买方向和观察时间。
+- `range_streak_samples`：每个事件对应的各场结果、来源、起止价独立存行。
+- `range_streak_order_signals`：每单的配置、连续场数、触发首末场次、市场方向、买入方向和观察时间。
+- `range_streak_order_samples`：该单观察到的逐场结果与价格来源；后续官方修正不改写历史订单依据，清空已结束订单时级联清理。
+
+持续方向从最近仍有效的事件恢复，重启后重新核对市场结果。模拟和实盘各自持久化订单依据。
+
+### 记录级隐藏（schema v9）
+
+- orders.is_hide、logs.is_hide：INTEGER NOT NULL DEFAULT 0，限定 0/1。隐藏为 1，新记录默认为 0。订单结算及状态更新不会改写此字段。
+- system_log_visibility(log_id, mode, is_hide)：联合主键 (log_id,mode)，外键关联 logs；共享 system 日志按模拟／实盘分别记录隐藏标志，避免互相影响。
+- POST /api/:mode/orders/visibility 或 /logs/visibility，body 为 {"hidden":true/false}，分别隐藏当前模式当前标签已有全部记录或恢复全部隐藏记录，不受分页和状态筛选影响；仍需本机 Origin 与控制令牌。range/gam 使用各自路径前缀及数据库。
+- 分页接口仅查询可见记录，返回 hiddenCount。完整导出保留隐藏记录及 isHide（订单）/is_hide（日志）字段。pending、订单占用、策略状态、报表及结算均不按隐藏标记过滤。隐藏不是清空；原有清空按钮仍执行删除。
+- v8 自动升级到 v9，已有数据默认可见。旧浏览器 localStorage 隐藏偏好不再读取。
