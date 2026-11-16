@@ -97,7 +97,7 @@ function App() {
   const streakActive=!!(state?.entrySignal?.streakSignal||state?.entrySignal?.lockedStreak);
   const rangeEntryLabel=streakActive?'反买 · 蓝色区域内 · 不限策略买价':`触发 < 0.50 / 成交 ≤ ${state?.rangeConfig?.executionMaxPrice??0.55}`;
 
-  function switchMode(next) { location.assign(['range','gam','reports'].includes(next) ? `/${next}` : '/live'); }
+  function switchMode(next) { location.assign(['range','gam','lead','reports'].includes(next) ? `/${next}` : '/live'); }
   async function action(path, body = {}) {
     if (busy) return false;
     setBusy(true);
@@ -185,4 +185,4 @@ function Reconcile({ order, busy, onSave }) {
   return <form onSubmit={e => { e.preventDefault(); onSave(id); }}><p className="modal-copy">请先到 Polymarket 核对这一场的真实订单，再粘贴完整订单 ID。系统只会读取该订单的官方成交记录，不会重发买单。</p><label className="reconcile-label">平台订单 ID<input value={id} onChange={e => setId(e.target.value)} required placeholder="0x…" pattern="0x[0-9a-fA-F]{64}"/></label><button className="button primary" disabled={busy}><RefreshCw size={16}/>保存并核对成交</button></form>;
 }
 
-createRoot(document.getElementById('root')).render(location.pathname.startsWith('/reports')?<ReportsPage/>:location.pathname.startsWith('/gam')?<GamMvPage/>:<App/>);
+createRoot(document.getElementById('root')).render(location.pathname.startsWith('/reports')?<ReportsPage/>:location.pathname.startsWith('/lead')?<GamMvPage lead/>:location.pathname.startsWith('/gam')?<GamMvPage/>:<App/>);

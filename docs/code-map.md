@@ -7,6 +7,7 @@
 | 地址 | 页面 | 主要组件 | API | 数据库 |
 | --- | --- | --- | --- | --- |
 | `/range` | 区间突破模拟 | `main.jsx`、`RangeStatus.jsx`、`StrategySettings.jsx` | `/range/api/*` | `data/range.sqlite` |
+| `/lead` | 行情领先与配对实验模拟 | `GamMvPage.jsx` lead 分支 | `/lead/api/*` | `data/lead-pair.sqlite` |
 | `/gam` | GAM 均值方差模拟 | `GamMvPage.jsx`、`GamMarket.jsx` | `/gam/api/*` | `data/gam-mv.sqlite` |
 | `/live` | 区间突破实盘 | `main.jsx`、`RangeStatus.jsx`、`StrategySettings.jsx` | `/api/*` | `data/trading.sqlite` |
 | `/reports` | 区间突破模拟报表 | `ReportsPage.jsx` | `/range/api/paper/report` | 只读区间突破模拟数据 |

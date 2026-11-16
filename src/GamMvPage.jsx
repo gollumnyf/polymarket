@@ -11,7 +11,17 @@ const money=value=>Number.isFinite(value)?'$'+value.toFixed(4):'—';
 const pct=value=>Number.isFinite(value)?(value*100).toFixed(2)+'%':'—';
 const number=(value,digits=4)=>Number.isFinite(value)?value.toFixed(digits):'—';
 
-export default function GamMvPage(){
+export default function GamMvPage({lead=false}){
+  const [leadDraft,setLeadDraft]=useState(null);
+  const [rangeOverlay,setRangeOverlay]=useState(null);
+  useEffect(()=>{
+    if(!lead)return;
+    let stopped=false;const controller=new AbortController();
+    const accept=data=>{if(!stopped)setRangeOverlay({time:data.time,zone:data.rangeState||data.rangeAnalysis?.candidate,boundary:data.entrySignal?.boundary,edgePercent:data.rangeConfig?.edgePercent??20});};
+    const load=async()=>{try{const r=await fetch("/range/api/state",{cache:"no-store",signal:controller.signal});if(r.ok)accept(await r.json());}catch{}};
+    const events=new EventSource("/range/api/events");events.onopen=load;events.onmessage=e=>{try{accept(JSON.parse(e.data));}catch{setRangeOverlay(null);}};events.onerror=()=>{if(!stopped)setRangeOverlay(null);};load();
+    return()=>{stopped=true;controller.abort();events.close();};
+  },[lead]);
   const [tab,setTab]=useState('orders');
   const [state,setState]=useState(null);
   const [token,setToken]=useState('');
@@ -67,12 +77,13 @@ export default function GamMvPage(){
     finally{actionBusy.current=false;setBusy(false);}
   }
   async function clearHistory(kind){
-    const text=kind==='orders'?'清空 GAM 已结束的模拟交易记录？待结算订单、余额和资金序列保留。':'清空 GAM 模拟盘的运行日志？';
+    const text=kind==='orders'?'清空当前 已结束的模拟交易记录？待结算订单、余额和资金序列保留。':'清空 GAM 模拟盘的运行日志？';
     if(window.confirm(text)&&await action('paper/'+kind+'/clear'))setHistoryKey(value=>value+1);
   }
 
   const now=clock+offset,round=Math.floor(now/300000)*300;
-  const account=state?.accounts?.paper,signal=state?.gam;
+  const account=state?.accounts?.paper,signal=lead?state?.entrySignal:state?.gam;
+  useEffect(()=>{if(state?.leadConfig)setLeadDraft(state.leadConfig);},[JSON.stringify(state?.leadConfig)]);
   const fresh=connected&&state?.spot?.round===round&&now-state.spot.at>=0&&now-state.spot.at<=6000&&!state?.errors?.spot;
   const direction=fresh&&!signal?.code?signal?.direction:null;
   const message=!connected?'等待服务连接':!fresh?'等待本场新鲜官方报价':signal?.message||'等待模型信号';
@@ -88,23 +99,23 @@ export default function GamMvPage(){
     if(await action(()=>startWithAmount('paper',Number(base),account.config,token)))setEditingBase(false);
   }
 
-  return <div className="app"><Sidebar active="gam"/><div className="main-shell">
-    <header className="topbar"><div className="breadcrumb">交易工作台 <ChevronRight size={13}/><strong>GAM 均值方差</strong></div><span className={'connection '+(connected?'healthy':'')}><i/>{connected?'服务已连接':'正在连接服务'}</span></header>
+  return <div className={lead?"app lead-page":"app"}><Sidebar active={lead?"lead":"gam"}/><div className="main-shell">
+    <header className="topbar"><div className="breadcrumb">交易工作台 <ChevronRight size={13}/><strong>{lead?"行情领先与配对":"GAM 均值方差"}</strong></div><span className={'connection '+(connected?'healthy':'')}><i/>{connected?'服务已连接':'正在连接服务'}</span></header>
     <main>
-      <section className="page-heading"><div><div className="eyebrow">GAM · MEAN VARIANCE</div><h1>GAM 均值方差 <span className="mode-label"><Activity size={12}/>模拟交易</span></h1><p>观察模型公允价值、买入边际与均值方差指标。</p></div></section>
+      <section className="page-heading"><div><div className="eyebrow">{lead?"LEAD & PAIR · EXPERIMENT":"GAM · MEAN VARIANCE"}</div><h1>{lead?"行情领先与配对":"GAM 均值方差"} <span className="mode-label"><Activity size={12}/>模拟交易</span></h1><p>{lead?"独立固定金额实验；Binance 仅作信号，Polymarket 官方价格决定结算。":"观察模型公允价值、买入边际与均值方差指标。"}</p></div></section>
       {(error||connectionError)&&<div className="data-warning" role="alert">{error||connectionError}</div>}
       <AccountStats account={account}/>
       <div className="trading-grid"><div className="market-column">
-      <details className="panel range-panel">
+      {lead?<details className="panel range-panel lead-parameters"><summary className="panel-heading range-summary"><h2><Activity size={17}/>领先信号与执行参数</h2><span className="range-toggle"><span className="range-expand-label">展开参数</span><span className="range-collapse-label">收起参数</span><ChevronDown size={16}/></span><div className="range-metrics"><div><span>本会话配对 / 总场次</span><strong>{state?.leadStats?.paired??0} / {state?.leadStats?.total??0}</strong></div><div><span>已结算配对盈亏</span><strong>{money(state?.leadStats?.pairedPnl)}</strong></div><div><span>已结算单边盈亏</span><strong>{money(state?.leadStats?.singlePnl)}</strong></div><div><span>未配对持仓 / 总手续费</span><strong>{state?.leadStats?.exposed??0} / {money(state?.leadStats?.fees)}</strong></div></div></summary><div className="range-panel-body"><p className="range-data-note">Binance BTC/USDT：{number(state?.leadFeed?.latest?.price,2)} · {state?.leadFeed?.error||"等待或接收公开成交流"}</p><p className="range-data-note">{signal?.message}</p><p className="range-data-note">固定金额、不使用马丁；信号是动量筛选，不是已校准胜率。盘口按约 1 秒轮询，实际延迟可能高于配置值。未配对持有到官方结算；已配对亦等待结算，不执行链上 merge。</p><div className="settings-grid">{[["windowSeconds","动量窗口（秒）"],["movePercent","Binance 最小涨跌（%）"],["leadPercent","领先差阈值（百分点）"],["firstMaxPrice","首腿最高买价"],["pairProfit","每份配对最低净利润"],["delayMs","最低模拟延迟（ms）"],["minRemaining","首腿最少剩余秒数"]].map(([key,label])=><label key={key}>{label}<div className="setting-input"><input type="number" step="any" disabled={baseLocked||busy} value={leadDraft?.[key]??""} onChange={e=>setLeadDraft({...leadDraft,[key]:Number(e.target.value)})}/></div></label>)}</div><button className="button secondary" disabled={!leadDraft||baseLocked||busy} onClick={()=>action("paper/config",{...account.config,leadConfig:leadDraft})}>保存实验参数</button></div></details>:<details className="panel range-panel">
         <summary className="panel-heading range-summary"><h2><Activity size={17}/>GAM 模型状态</h2><span className="range-summary-status">{direction?'模型偏向 '+direction:message}</span><span className="range-toggle"><span className="range-expand-label">展开</span><span className="range-collapse-label">收起</span><ChevronDown size={16}/></span></summary>
         <div className="range-panel-body">
           <div className="range-metrics"><div><span>模型边际</span><strong className={direction?'green':''}>{direction?'达到阈值':'等待'}</strong></div><div><span>UP / DOWN 公允价值</span><strong>{pct(signal?.fairUp)} / {pct(signal?.fairDown)}</strong></div><div><span>目标残差</span><strong>{pct(signal?.targetResidual)}</strong></div><div><span>双边报价合计（未扣手续费）</span><strong>{money(signal?.arbitrage?.totalCost)}</strong></div></div>
           <div className="range-observations"><span>相对起始价 d <b>{number(signal?.d,5)}</b></span><span>波动输入 v <b>{number(signal?.v,5)}</b></span><span>剩余秒数 τ <b>{number(signal?.tau,1)}</b></span><span>订单流输入 OFI <b>{number(signal?.ofi,3)}</b></span><span>模型得分 z <b>{number(signal?.z)}</b></span></div>
           <p className="range-data-note">模型公允价值减去对应卖一价达到 {pct(state?.gamModel?.minEdge)} 时产生方向信号，实际买入仍须通过行情、盘口与账户限制。目标残差和双边报价目前仅用于展示。</p>
         </div>
-      </details>
-      <GamMarket state={state} now={now} connected={connected}/><section className={'signal-bar '+(direction?.toLowerCase()||'neutral')}><div className="signal-icon"><Activity size={18}/></div><div><span className="mini-label">当前模型信号</span><p><b>{direction||'等待'}</b><span>{message}</span></p></div></section></div>
-        <StrategyControl account={account} busy={busy} connected={connected} token={token} base={base} baseLocked={baseLocked} baseDirty={baseDirty} setEditingBase={setEditingBase} setBase={setBase} onToggle={toggleStrategy} title="GAM 均值方差马丁策略" entryTime="开盘立即检测" entryMode="GAM 估值边际 · 买价 ≤ 0.50"/>
+      </details>}
+      <GamMarket state={state} now={now} connected={connected} showRange={lead} rangeOverlay={lead&&rangeOverlay&&now-rangeOverlay.time<15000?rangeOverlay:null}/><section className={'signal-bar '+(direction?.toLowerCase()||'neutral')}><div className="signal-icon"><Activity size={18}/></div><div><span className="mini-label">{lead?"当前领先信号":"当前模型信号"}</span><p><b>{direction||'等待'}</b><span>{message}</span></p></div></section></div>
+        <StrategyControl account={account} busy={busy} connected={connected} token={token} base={base} baseLocked={baseLocked} baseDirty={baseDirty} setEditingBase={setEditingBase} setBase={setBase} onToggle={toggleStrategy} fixedStake={lead} title={lead?"行情领先与配对":"GAM 均值方差马丁策略"} entryTime={lead?`信号触发后 ≥ ${state?.leadConfig?.delayMs??500}ms`:"开盘立即检测"} entryMode={lead?`领先信号 · 首腿 ≤ ${state?.leadConfig?.firstMaxPrice??0.55}`:"GAM 估值边际 · 买价 ≤ 0.50"}/>
       </div>
       {blocked&&<p className="range-data-note">最近一次未买入原因：{blocked.message}</p>}
       <HistoryPanel onVisibility={(kind,hidden)=>action(`paper/${kind}/visibility`,{hidden})} key={historyKey} mode="paper" tab={tab} setTab={setTab} account={account} currentRound={round} connected={connected} spot={state?.spot} now={now} spotError={state?.errors?.spot} busy={busy} onClear={clearHistory}/>

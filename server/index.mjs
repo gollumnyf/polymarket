@@ -1,4 +1,7 @@
 import express from 'express';
+import {LeadStore} from './lead-store.mjs';
+import {LeadEngine} from './lead-engine.mjs';
+import {BinanceFeed} from './binance-feed.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,11 +14,12 @@ import {RangeStore} from './range-store.mjs';
 import {paperReport} from './reports.mjs';
 import {GamMvEngine} from './gam-mv-engine.mjs';
 
-export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,gamEngine=null,allowedModes=['paper','live'] } = {}) {
+export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,gamEngine=null,leadEngine=null,allowedModes=['paper','live'] } = {}) {
   const app = express();
   app.disable('x-powered-by');
   if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,allowedModes:['paper']}));
   if(gamEngine)app.use('/gam',createApp(gamEngine,{onShutdown,allowedModes:['paper']}));
+  if(leadEngine)app.use('/lead',createApp(leadEngine,{onShutdown,allowedModes:['paper']}));
   const token = randomBytes(32).toString('hex');
   const service={name:'polymarket-btc-console',root:resolve(fileURLToPath(new URL('../',import.meta.url))),pid:process.pid,instanceId:randomBytes(12).toString('hex'),shutdownEnabled:typeof onShutdown==='function'};
   app.use((req, res, next) => {
@@ -142,8 +146,9 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
       'predictionOutcome','predictionWon','predictionOpen','predictionClose','predictionAt','predictionMatches','predictionSource','predictionPriceAt'];
     if(engine instanceof MomentumEngine)keys.push('openingSource','oracleWindow','previousAt','previousPrice','latestAt','latestPrice');
     if(engine instanceof RangeEngine)keys.push('streakFirstRound','streakLastRound','streakRoundsRequired','streakMarketDirection','streakBuyDirection','streakObservedAt','resumeRounds','executionMaxPrice','boundaryPauseRound','boundaryConfirmCount','boundaryConfirmLastRound','boundaryConfirmLastClose','boundaryConfirmLastSource','boundaryConfirmLower','boundaryConfirmUpper','boundaryPauseSide','boundaryPausedAt','boundaryResumeSide','boundaryResumedAt','boundaryResumePrice','boundaryResumeThreshold','edgePercent','rp01Enabled','rp01ReleaseId','phase','lower','upper','upCount','downCount','windowStart','windowEnd','formedAt','breakoutSince','levelTimeframeMinutes','levelLookbackHours','levelLagMinutes','levelWindowStart','levelWindowEnd','supportSource','resistanceSource','directionRule','decisionUpCount','decisionDownCount','tiePreviousRound','tiePreviousDirection','tiePreviousSource','actualLower','actualUpper','lockedDirectionRule','lockedPreviousRound','lockedPreviousDirection','lockedPreviousSource','directionSelectedAt','tradeFromRound','formedFrom');
+    if(engine instanceof LeadEngine)for(const leg of [1,2])for(const field of ['direction','shares','cost','fee','price','created_at','signal_at','book_at','reason'])keys.push('leg'+leg+'_'+field);
     const cell = value => `"${String(value ?? '').replace(/^[=+@-]/, "'$&").replaceAll('"', '""')}"`;
-    const rows = engine.store.orders(req.params.mode, -1).map(order=>({...order,...order.momentumSignal,...order.rangeSignal,
+    const rows = engine.store.orders(req.params.mode, -1).map(order=>({...order,...order.momentumSignal,...order.rangeSignal,...Object.fromEntries((order.pairLegs||[]).flatMap(leg=>Object.entries(leg).map(([key,value])=>["leg"+leg.leg+"_"+key,value]))),
       id:order.id,round:order.round,createdAt:order.createdAt,direction:order.direction,price:order.price,
       streakFirstRound:order.streakSignal?.firstRound,streakLastRound:order.streakSignal?.lastRound,streakRoundsRequired:order.streakSignal?.roundsRequired,streakMarketDirection:order.streakSignal?.marketDirection,streakBuyDirection:order.streakSignal?.direction,streakObservedAt:order.streakSignal?.observedAt,
       predictionOutcome:order.prediction?.outcome,predictionWon:order.prediction?.won,
@@ -182,8 +187,12 @@ async function main() {
   const gamVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const gamEngine=new GamMvEngine(gamStore,gamVenue);
   const engine=new RangeLiveEngine(store,venue,rangeEngine);
-  const engines=[rangeEngine,engine,gamEngine];
-  const app = createApp(engine,{onShutdown:close,rangeEngine,gamEngine,allowedModes:['live']});
+  const leadStore=new LeadStore(resolve(root,'data/lead-pair.sqlite'));
+  const leadVenue=new Polymarket({officialOpeningOnly:true});
+  const leadEngine=new LeadEngine(leadStore,leadVenue);
+  leadEngine.feed=new BinanceFeed(x=>leadEngine.sample(x));leadEngine.feed.start();
+  const engines=[rangeEngine,engine,gamEngine,leadEngine];
+  const app = createApp(engine,{onShutdown:close,rangeEngine,gamEngine,leadEngine,allowedModes:['live']});
   const production = process.argv.includes('--production');
   let vite;
   if (production) {
@@ -208,7 +217,7 @@ async function main() {
   async function close() {
     if (closing) return; closing = true;for(const current of engines)current.closing=true;
     clearInterval(timer);
-    venue.close();rangeVenue.close();gamVenue.close();
+    venue.close();rangeVenue.close();gamVenue.close();leadVenue.close();leadEngine.feed.close();
     for(const current of engines)for(const mode of current.modes)current.stop(mode);
     server.close(); server.closeAllConnections();
     if (vite) await vite.close();
@@ -216,7 +225,7 @@ async function main() {
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
     while (engines.some(current=>current.busy||current.entryBusy||current.spotTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
-    store.close();rangeStore.close();gamStore.close();process.exit(0);
+    store.close();rangeStore.close();gamStore.close();leadStore.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);
 }

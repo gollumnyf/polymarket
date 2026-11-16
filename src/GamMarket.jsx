@@ -6,7 +6,7 @@ import HistoricalRounds from './HistoricalRounds.jsx';
 const money=value=>Number.isFinite(value)?`${value.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`:'—';
 const time=value=>new Date(value).toLocaleTimeString('zh-CN',{hour12:false});
 
-export default function GamMarket({state,now,connected}){
+export default function GamMarket({state,now,connected,showRange=false,rangeOverlay=null}){
   const [range,setRange]=useState('round');
   const round=Math.floor(now/300000)*300,left=Math.max(0,Math.ceil(round+300-now/1000));
   const spot=state?.spot?.round===round?state.spot:null;
@@ -19,8 +19,9 @@ export default function GamMarket({state,now,connected}){
     <div className="round-progress"><span style={{width:`${(300-left)/3}%`}}/></div>
     <HistoricalRounds momentum round={round} mode="paper" entryDelay={state?.accounts?.paper?.config?.entryDelay??0}/>
     <div className="chart-toolbar"><div><span className="mini-label">BTC 官方参考价 <span className="price-source">{spot?.windowSeconds?`CHAINLINK TWAP ${spot.windowSeconds}s`:'CHAINLINK'}</span></span><div className="btc-value">{money(spot?.price)}</div><div className="price-caption round-change-caption"><span>本场起始 {money(spot?.currentOpen)}</span><span>本场涨跌 {Number.isFinite(spot?.change)?<b className={spot.change>=0?'green':'red'}>{spot.change>=0?'↑ 上涨':'↓ 下跌'} {money(Math.abs(spot.change))}</b>:'待公布'}</span>{spot&&!fresh&&<b>数据待更新</b>}</div></div><div className="chart-range">{[['round','本场'],['30m','近 30 分钟']].map(([value,label])=><button key={value} className={range===value?'active':''} onClick={()=>setRange(value)}>{label}</button>)}</div></div>
-    <PriceChart ticks={state?.ticks||[]} reference={spot?.currentOpen??null} start={round} now={now} range={range}/>
+    <PriceChart zone={rangeOverlay?.zone} boundary={rangeOverlay?.boundary} edgePercent={rangeOverlay?.edgePercent??20} ticks={state?.ticks||[]} reference={spot?.currentOpen??null} start={round} now={now} range={range}/>
     <div className="chart-legend"><span><i className="legend-price"/>Chainlink 实时参考价</span><span><i className="legend-reference"/>本场起始价 <b>{money(spot?.currentOpen)}</b></span><span className="update-time">{fresh?<><i className="live-dot"/>Polymarket 实时流</>:'等待数据连接'}</span></div>
+    {showRange&&<p className="range-data-note">{Number.isFinite(rangeOverlay?.zone?.lower)&&Number.isFinite(rangeOverlay?.zone?.upper)?`区间突破参考：支撑 ${money(rangeOverlay.zone.lower)} · 压力 ${money(rangeOverlay.zone.upper)} · 蓝色区域为中间 ${100-2*rangeOverlay.edgePercent}%；仅作图表参考，不参与配对策略入场判断。`:"正在同步区间突破页面的支撑位与压力位…"}</p>}
     <div className="outcome-grid">{[['UP','看涨',ArrowUp],['DOWN','看跌',ArrowDown]].map(([direction,label,Icon])=><div key={direction} className={`outcome ${direction.toLowerCase()}`}><span className="outcome-arrow"><Icon size={20}/></span><div><strong>{label} <span>{direction}</span></strong><small>{bookFresh(direction)?'买一 '+(Number(books[direction].bids?.[0]?.price||0)*100).toFixed(1)+'¢':'等待实时盘口'}</small></div><div className="outcome-price">{bookFresh(direction)&&books[direction].asks?.[0]?(Number(books[direction].asks[0].price)*100).toFixed(1):'—'}<span>卖一价格</span></div></div>)}</div>
   </section>;
 }
