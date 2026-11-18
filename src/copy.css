@@ -1,0 +1,19 @@
+
+.copy-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:20px}
+.copy-stats .panel{padding:20px;display:flex;flex-direction:column;gap:12px}
+.copy-stats span{color:var(--muted);font-size:12px}
+.copy-stats strong{font-size:23px}
+.copy-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:24px;align-items:start}
+.copy-records{min-width:0;padding:20px}
+.copy-table-scroll{overflow-x:auto}
+.copy-table{width:100%;border-collapse:collapse;font-size:12px;line-height:1.8}
+.copy-table th,.copy-table td{padding:14px 10px;text-align:left;vertical-align:top;border-bottom:1px solid #26313b}
+.copy-table th{color:#93a4b7;font-weight:500;white-space:nowrap}
+.copy-table td:last-child{min-width:210px;max-width:340px;overflow-wrap:anywhere}
+.copy-table summary{cursor:pointer}
+.copy-table a,.copy-wallet{color:#7ddbc8}
+.copy-controls{padding:20px;display:grid;gap:16px}
+.copy-controls label{display:grid;gap:8px;font-size:12px}
+.copy-wallet{overflow-wrap:anywhere;font-size:12px}
+.copy-pagination{display:flex;gap:16px;align-items:center;justify-content:flex-end;margin-top:20px;font-size:12px}
+@media(max-width:1100px){.copy-layout{grid-template-columns:1fr}.copy-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}

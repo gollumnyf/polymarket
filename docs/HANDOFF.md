@@ -42,9 +42,11 @@
 | 页面 | 路径 | API 前缀 | 数据文件 |
 | --- | --- | --- | --- |
 | 区间突破模拟 | `/range` | `/range/api` | `data/range.sqlite` |
-| GAM 均值方差模拟 | `/gam` | `/gam/api` | `data/gam-mv.sqlite` |
+| 上场方向模拟 | `/previous` | `/previous/api` | `data/previous-direction.sqlite` |
 | 区间策略实盘 | `/live` | `/api` | `data/trading.sqlite` |
-| 模拟报表 | `/reports` | `/range/api/paper/report` | 只统计 `range.sqlite` |
+| 模拟报表 | `/reports` | `/range/api/paper/report`、`/previous/api/paper/report` | 按模拟盘分别统计 |
+
+`server/previous-direction-engine.mjs` 复用通用模拟成交和马丁资金规则，开盘 0–15 秒检查紧邻上一场数据。比较最近 40 个已结束场次与各自上一场（读取 41 个场次），同向命中至少比反向多 5 场才跟随，否则反买。反买时连续两次同向（最近三场方向相同）暂停一场，下一场恢复判断。优先使用官方结果，缺失或作废使相邻配对不计票，不跨场比较。未结算用同源预计，不读取本场 BTC 涨跌作为入场条件。按当前卖盘逐档模拟成交，单份不得超过 0.70；账户和交易记录独立。
 
 实盘跟随区间模拟的分析、选向和共用参数，资金、订单、日志、结算、配置记录属于实盘自己的数据库。区间模拟不启动也可以进行行情分析，不能用“模拟账户正在运行”作为实盘分析的必要条件。
 
@@ -59,7 +61,7 @@
 - `HistoricalRounds.jsx`：最近 40 场市场结果与悬浮详情。
 - `Sidebar.jsx`：统一菜单。
 
-不要复制一份 GAM 图表或策略控制面板再独立维护样式；当前要求是与 range 共用风格和组件。
+图表与策略控制面板优先复用共享组件，避免独立维护重复样式。
 
 ## 4. 关键业务名词
 
@@ -168,18 +170,9 @@ R - N*300, R - (N-1)*300, ... , R - 300
 - 普通接口错误、预测/结算请求失败、盘口暂不可用：记录具体原因并后续重试，不自动关闭账户运行状态；不满足条件的交易仍应拦截。
 - 未下单原因必须写明实际原因、场次、时间及有关数值，避免用“原因 A 或原因 B”这种不能定位的描述。
 
-## 7. GAM 的实际实现范围
+## 7. 已移除的 GAM 模块
 
-`GamMvEngine` 基于 `MomentumEngine` 执行路径，独立模拟账户。根据模型公允价值与所选盘口卖一价格的差判断方向，遵守该执行路径的官方价格校验和最高 0.50 买价规则，不继承 range 的 0.55 硬上限或连续反买规则。
-
-当前限制必须如实告知后续开发者：
-
-- 模型系数在 `gam-mv-engine.mjs` 内定义，尚无完整训练和在线更新流程。
-- OFI 输入固定为 0。
-- 页面有目标残差、均值方差、双边报价/套利观察指标，但未接入自动对冲、再平衡或双边套利下单。
-- `gamSignal` 未全部写入独立结构化模型信号表；新订单会通过 `entry_reason` 保存当时模型估值、盘口与阈值说明，不代表全部模型特征已有结构化存档。
-
-不要仅因页面有指标，就宣称对应交易功能已实现。
+GAM 均值方差的页面、API、模型计算与后台引擎已移除。旧 `/gam` 及其 API 返回 410；`data/gam-mv.sqlite` 仅归档保留，服务不再打开。
 
 ## 8. 历史记录、隐藏和下单原因
 
@@ -226,7 +219,7 @@ R - N*300, R - (N-1)*300, ... , R - 300
 | `server/polymarket.mjs` | 市场/价格接口、盘口、真实下单/核对/兑付 |
 | `server/history.mjs` / `history-record.mjs` | 40 场查询、分批结算、历史合并与保留 |
 | `server/predictions.mjs` | 场次/订单预测与预计资金序列 |
-| `server/store.mjs` / `range-store.mjs` | 基础与 range/GAM 使用的持久化、迁移 |
+| `server/store.mjs` / `range-store.mjs` | 基础与 range 使用的持久化、迁移 |
 | `server/reports.mjs` | 模拟报表 SQL 聚合 |
 | `src/api.mjs` | API 前缀、控制操作、最新快照合并 |
 | `src/HistoryPanel.jsx` / `order-reason.mjs` | 分页历史和原因展示/旧证据还原 |
@@ -410,13 +403,26 @@ git diff --check
 
 本文件总结当前规则；`README.md` 部分段落描述旧版兼容功能，不应按其中孤立的旧描述推翻本文件列出的最新约束。未来若新增页面、策略、字段或变更口径，同步更新本文件、对应模块说明与回归测试，并清楚注明已替代的规则。
 
-## 17. 2026-11-16 新增：行情领先与配对实验模拟盘
+## 17. 已移除模块
 
-- 页面 /lead，API /lead/api，数据库 data/lead-pair.sqlite，只支持 paper，默认暂停。菜单和账户独立；不计入原 range 报表。
-- LeadEngine 复用官方行情与盘口采集，独立首腿/配对/结算流程；Binance BTCUSDT aggTrade WebSocket 仅作信号，不改变官方结算来源。当前模型是动量差筛选，不是概率模型，也未证明净正收益。
-- 默认固定首腿金额 6，15 秒 Binance 变动至少 0.05%，相对官方同窗口涨跌领先差至少 0.02 个百分点；首腿最高 0.55，离收盘至少 30 秒。每侧数据使用本机收到时间对齐；保存源时间，源时钟/收到时间差超过 5 秒不用于信号。冷启动需要完整窗口，不回放历史样本假装实时。
-- 首腿和配对均等待至少 500ms（可配置，最小 250ms），使用等待后的新盘口与当前条件重算；实际盘口约 1 秒轮询，执行延迟可能更大。只模拟成交，不把看到的报价当成保证成交；没有实际交易队列竞争模拟。
-- 一场一条父订单，最多两个腿；每场占用仍唯一。第二腿必须同市场相反方向且份额相同。两腿累计成本含手续费，每份净利润至少 0.03 才配对；不足深度/余额/收益不补仓。未配对持有至官方结算，配对也等结算，不执行链上 merge。暂停不再开腿，但继续结算。每次亏损后仍固定金额，不使用马丁。
-- lead_settings 独立列存参数；lead_samples 保存抽样信号源、源时间、收到时间和价格（Binance 最多每 100ms 一条）；lead_legs 保存两腿方向、份额、成本、费、价格、信号/盘口/成交时间和原因；lead_leg_depth 保存各腿盘口深度。父 orders 成本/费用合计，均价列为首腿均价，详情分别展示两腿。CSV 包含每腿独立列。
-- 页面显示本会话配对数量、配对结算盈亏、单边结算盈亏、未配对持仓和费用。隐藏不影响统计；清空仍会删除相应旧记录。
-- 新文件：server/lead-engine.mjs、lead-pair.mjs、lead-store.mjs、binance-feed.mjs；页面复用 GamMvPage 的 lead 分支及共享图表，tests/lead-pair.test.mjs 覆盖。重启维护清单增补第四套 lead 数据库和行情连接；新账户不得自动启动。
+行情领先与配对已移除页面、API、引擎及 Binance 专用信号采集。旧 data/lead-pair.sqlite 只归档保留，不再被服务打开；旧 /lead 路径返回 410。
+
+### 跟单观察盘 /copy（2026-11-17）
+
+独立 SQLite：data/copy-observer.sqlite；CopyObserver 仅调用公开读取接口，绝不调用认证、buy 或任何真实订单接口。固定目标 0x13f0bcec1e2e60ec9acc3bee4d2da2fe9694a50f，只观察 BTC 5 分钟；默认开始采集，从每次启动/重新启用后的新成交起步，不回填历史成交为可跟随机会。
+
+/api/copy/state 提供统计和 20 场 SQL 分页；/api/copy/config 复用本地 Host/Origin/controlToken 校验。配置表 copy_config、原始成交 copy_fills、单场观察 copy_observations、盘口 copy_depth 均为类型化列。默认每场 6 美元机会评估（不是资金账户、没有复投收益率），买价上限 0.99、比目标价最多高 0.005、成交最大延迟 15 秒。每场只模拟首次观察方向一次；拆单聚合，卖出和反向交易仅记证据，不自动卖出。
+
+数据源是 Data API v2 /trades，显式 taker_only=false 包含 maker。2 秒轮询，游标分页，重叠 300 秒并按交易哈希/token/side/time/price/size 去重。字段时间是公共接口时间，不保证为实际撮合时间；发现时另记本地毫秒时间。当前盘口检查费用、tick、最小份额、深度、价格上限；请求后再检查暂停、时效和场次是否结束；错过不追单。记录具体原因及卖盘档位。按官方 resolution 结算，暂停仍检查已有记录；启动前历史不回放，重启未完成入场标记错过。目标收益只能显示已观察同方向买入若持有到结算的毛收益，不是其账户真实盈亏（未计完整仓位、卖出、费用、返利）。
+
+回归：tests/copy-observer.test.mjs。服务关闭应等待 observer.busy 并关闭 DB；备份清单包含 copy-observer.sqlite。
+
+### RA-01 区间组合并行研究（2026-11-17）
+
+见 docs/research/RA-01-range-analysis.md。RangeAdaptiveObserver 使用独立 data/range-adaptive.sqlite，仅采集第 60 秒的因果特征与新盘口模拟，不改变 range 账户或 live 下单。默认自动观察，页面可暂停，启动前或错过 65 秒的场次不补买。API /range/api/adaptive/state（SQL 每页 20 场）、/range/api/adaptive/config 复用 Origin/token 校验。server/range-adaptive-model.mjs 为冻结模型，不可根据最后留出表现偷偷调参；新研究用 --new-study，新目录保留证据。方向胜率和成交胜率必须分开，未达到稳定 55% 的证据，不应标注已达标。服务关闭等待 adaptiveObserver.busy，备份增加 range-adaptive.sqlite。
+
+### RA-01 已切换区间模拟实际下单（用户明确授权）
+
+/ range（实际路由 /range）现在使用 RangeAdaptiveEngine，继承原账户与预测结算、马丁、风控、场次去重。固定第 60 秒决策，最晚 65 秒；盘口须 60 秒后获取且年龄≤3秒；硬成交上限0.50，无旧连续反买的无限价例外。决策冻结，缺历史或无匹配规则空仓；新订单 signalRule=range_adaptive_ra01，entry_reason 保存完整原因，range_adaptive_order_signals 保存类型化模型特征。旧持仓照常结算，资金序列不重置。
+
+实盘 RangeLiveEngine 明确调用 source.legacySignal()，保留原 entryWindow，不跟随 RA-01；原旧区间规则和成交限制继续生效。不要重新将 source.signal() 接给实盘。RA-01 研究面板仍为独立 $6 固定金额对照，暂停对照不暂停模拟账户，实际账户启停与历史交易仍用右侧策略控制及原交易表。模型执行参数冻结，设置只调整资金风控；原区间参数不再影响 RA-01 选向。

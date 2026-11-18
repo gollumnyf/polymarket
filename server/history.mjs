@@ -59,15 +59,15 @@ export function withHistoricalForecast(item,forecast) {
 // History is read independently of trading ticks. Completed rounds are cached;
 // failures cannot delay execution, change positions, or invent a final result.
 export class RoundHistory {
-  constructor(venue, { now = () => Date.now(), store = null } = {}) {
+  constructor(venue, { now = () => Date.now(), store = null, lookback = HISTORY_COUNT } = {}) {
     this.venue = venue; this.now = now; this.cache = new Map();
-    this.store = store;
+    this.store = store; this.lookback=lookback;
     this.lastAttempt = 0; this.updatedAt = null; this.currentRound = null;
     this.inflight = null; this.error = null;
   }
-  starts() {
+  starts(count=HISTORY_COUNT) {
     const current = roundStart(this.now());
-    return Array.from({ length: HISTORY_COUNT }, (_, i) => current - (HISTORY_COUNT - i) * 300);
+    return Array.from({ length: count }, (_, i) => current - (count - i) * 300);
   }
   lastSecondForecast(item) {
     if(!this.store||this.now()<item.end*1000)return null;
@@ -100,17 +100,19 @@ export class RoundHistory {
       return withReversal(withHistoricalForecast(item,this.lastSecondForecast(item)), initial);
     }), entryDelay,followPreviousAtOpen,reverseSignal,updatedAt: this.updatedAt, error: this.error };
   }
-  async read({entryDelay = DEFAULT_CONFIG.entryDelay,followPreviousAtOpen=false,reverseSignal=false} = {}) {
-    if (this.inflight) { await this.inflight; return this.snapshot(entryDelay,followPreviousAtOpen,reverseSignal); }
-    if (this.currentRound !== roundStart(this.now()) || this.now() - this.lastAttempt >= 15000) {
+  poll() {
+    if (!this.inflight&&(this.currentRound !== roundStart(this.now()) || this.now() - this.lastAttempt >= 15000)) {
       this.inflight = this.refresh().finally(() => { this.inflight = null; });
-      await this.inflight;
     }
+    return this.inflight;
+  }
+  async read({entryDelay = DEFAULT_CONFIG.entryDelay,followPreviousAtOpen=false,reverseSignal=false} = {}) {
+    await this.poll();
     return this.snapshot(entryDelay,followPreviousAtOpen,reverseSignal);
   }
   async refresh() {
     this.lastAttempt = this.now(); this.currentRound = roundStart(this.now());
-    const starts = this.starts();
+    const starts = this.starts(this.lookback);
     for (const key of this.cache.keys()) if (!starts.includes(key)) this.cache.delete(key);
     this.syncSaved(starts);
     this.updatedAt = Math.max(this.updatedAt || 0, ...[...this.cache.values()].map(item => item.updatedAt || 0)) || null;
@@ -120,7 +122,7 @@ export class RoundHistory {
     });
     if (!missing.length) { this.error = null; return; }
     try {
-      const query = new URLSearchParams({ limit: String(HISTORY_COUNT) });
+      const query = new URLSearchParams({ limit: String(this.lookback) });
       for (const round of missing) query.append('slug', `btc-updown-5m-${round}`);
       const response = await this.venue.fetch(`https://gamma-api.polymarket.com/events?${query}`);
       if (!response.ok) throw new Error(`历史场次接口 HTTP ${response.status}`);
@@ -130,7 +132,7 @@ export class RoundHistory {
       const selected = events.filter(event => wanted.has(event.slug));
       const conditions = [...new Set(selected.flatMap(event => event.markets || [])
         .filter(m => wanted.has(m.slug)).map(m => m.conditionId).filter(Boolean))];
-      if (conditions.length > HISTORY_COUNT) throw new Error('历史场次包含异常数量的市场');
+      if (conditions.length > this.lookback) throw new Error('历史场次包含异常数量的市场');
       // The SDK accepts at most 20 IDs, independently of the displayed count.
       // Keep successful batches and event prices even if another batch fails.
       const resolutions=[],errors=[];

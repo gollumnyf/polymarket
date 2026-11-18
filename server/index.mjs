@@ -1,7 +1,7 @@
+import {RangeAdaptiveObserver} from './range-adaptive-observer.mjs';
+import {RangeAdaptiveEngine} from './range-adaptive-engine.mjs';
+import {CopyObserver} from './copy-observer.mjs';
 import express from 'express';
-import {LeadStore} from './lead-store.mjs';
-import {LeadEngine} from './lead-engine.mjs';
-import {BinanceFeed} from './binance-feed.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,15 +11,17 @@ import {MomentumEngine} from './momentum.mjs';
 import {RangeEngine} from './range-engine.mjs';
 import {RangeLiveEngine} from './range-live-engine.mjs';
 import {RangeStore} from './range-store.mjs';
+import {Store} from './store.mjs';
+import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
 import {paperReport} from './reports.mjs';
-import {GamMvEngine} from './gam-mv-engine.mjs';
 
-export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,gamEngine=null,leadEngine=null,allowedModes=['paper','live'] } = {}) {
+export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,copyObserver=null,adaptiveObserver=null,allowedModes=['paper','live'] } = {}) {
   const app = express();
   app.disable('x-powered-by');
-  if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,allowedModes:['paper']}));
-  if(gamEngine)app.use('/gam',createApp(gamEngine,{onShutdown,allowedModes:['paper']}));
-  if(leadEngine)app.use('/lead',createApp(leadEngine,{onShutdown,allowedModes:['paper']}));
+  if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,adaptiveObserver,allowedModes:['paper']}));
+  if(previousEngine)app.use('/previous',createApp(previousEngine,{history:previousEngine.history,onShutdown,allowedModes:['paper']}));
+  app.use('/gam',(req,res)=>res.status(410).json({error:'GAM 均值方差模块已移除'}));
+  app.use('/lead',(req,res)=>res.status(410).json({error:'行情领先与配对模块已移除'}));
   const token = randomBytes(32).toString('hex');
   const service={name:'polymarket-btc-console',root:resolve(fileURLToPath(new URL('../',import.meta.url))),pid:process.pid,instanceId:randomBytes(12).toString('hex'),shutdownEnabled:typeof onShutdown==='function'};
   app.use((req, res, next) => {
@@ -42,6 +44,14 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     next();
   });
   app.use('/api', express.json({ limit: '16kb' }));
+  if(adaptiveObserver){
+    app.get('/api/adaptive/state',(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(adaptiveObserver.snapshot(req.query.page));});
+    app.post('/api/adaptive/config',(req,res)=>{try{adaptiveObserver.configure(req.body);res.json({...engine.snapshot(),controlToken:token});}catch(e){res.status(400).json({error:e.message});}});
+  }
+  if(copyObserver){
+    app.get('/api/copy/state',(req,res)=>{res.setHeader('Cache-Control','no-store');res.json({...copyObserver.snapshot(req.query.page),controlToken:token});});
+    app.post('/api/copy/config',(req,res,next)=>{try{copyObserver.configure(req.body);res.json({...copyObserver.snapshot(),controlToken:token});}catch(e){res.status(400).json({error:e.message});}});
+  }
   for(const mode of ['paper','live'])if(!allowedModes.includes(mode))app.use('/api/'+mode,(req,res)=>res.status(400).json({error:mode==='live'?'此页面仅支持模拟交易':'此页面仅支持实盘交易'}));
   app.get('/api/health', (req, res) => {res.setHeader('Cache-Control','no-store');res.json({ ok: true, now: Date.now(),service });});
   app.post('/api/service/shutdown',(req,res)=>{
@@ -64,6 +74,11 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
       res.setHeader('Cache-Control', 'no-store');
       res.json({ ...data, mode,entryDelay,followPreviousAtOpen,reverseSignal,items: data.items.map(item => {
         const order = engine.store.orderForRound(mode,item.round);
+        if(engine instanceof PreviousDirectionEngine){
+          const filled=order?.shares>0;
+          const initialSignal=filled?{direction:order.direction,observedAt:order.createdAt,rule:order.signalRule}:null;
+          return {...item,initialSignal,reversal:filled&&item.status==='resolved'?order.direction!==item.result:null,entryBlock:engine.store.entryBlock(mode,item.round),trade:order?{direction:order.direction,status:order.status,pnl:order.pnl,prediction:order.prediction}:null};
+        }
         const momentum=engine instanceof MomentumEngine;
         const initialSignal=momentum&&order?{direction:order.direction,observedAt:order.momentumSignal?.latestAt??order.rangeSignal?.priceAt??order.createdAt,price:order.signalPrice,referencePrice:order.referencePrice,rule:order.signalRule}:momentum?null:item.initialSignal;
         return { ...item,initialSignal,reversal:momentum?(order&&item.status==='resolved'?order.direction!==item.result:null):item.reversal, entryBlock:engine.store.entryBlock(mode,item.round),trade: order ? { direction: order.direction, status: order.status, pnl: order.pnl, prediction:order.prediction } : null };
@@ -146,9 +161,8 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
       'predictionOutcome','predictionWon','predictionOpen','predictionClose','predictionAt','predictionMatches','predictionSource','predictionPriceAt'];
     if(engine instanceof MomentumEngine)keys.push('openingSource','oracleWindow','previousAt','previousPrice','latestAt','latestPrice');
     if(engine instanceof RangeEngine)keys.push('streakFirstRound','streakLastRound','streakRoundsRequired','streakMarketDirection','streakBuyDirection','streakObservedAt','resumeRounds','executionMaxPrice','boundaryPauseRound','boundaryConfirmCount','boundaryConfirmLastRound','boundaryConfirmLastClose','boundaryConfirmLastSource','boundaryConfirmLower','boundaryConfirmUpper','boundaryPauseSide','boundaryPausedAt','boundaryResumeSide','boundaryResumedAt','boundaryResumePrice','boundaryResumeThreshold','edgePercent','rp01Enabled','rp01ReleaseId','phase','lower','upper','upCount','downCount','windowStart','windowEnd','formedAt','breakoutSince','levelTimeframeMinutes','levelLookbackHours','levelLagMinutes','levelWindowStart','levelWindowEnd','supportSource','resistanceSource','directionRule','decisionUpCount','decisionDownCount','tiePreviousRound','tiePreviousDirection','tiePreviousSource','actualLower','actualUpper','lockedDirectionRule','lockedPreviousRound','lockedPreviousDirection','lockedPreviousSource','directionSelectedAt','tradeFromRound','formedFrom');
-    if(engine instanceof LeadEngine)for(const leg of [1,2])for(const field of ['direction','shares','cost','fee','price','created_at','signal_at','book_at','reason'])keys.push('leg'+leg+'_'+field);
     const cell = value => `"${String(value ?? '').replace(/^[=+@-]/, "'$&").replaceAll('"', '""')}"`;
-    const rows = engine.store.orders(req.params.mode, -1).map(order=>({...order,...order.momentumSignal,...order.rangeSignal,...Object.fromEntries((order.pairLegs||[]).flatMap(leg=>Object.entries(leg).map(([key,value])=>["leg"+leg.leg+"_"+key,value]))),
+    const rows = engine.store.orders(req.params.mode, -1).map(order=>({...order,...order.momentumSignal,...order.rangeSignal,
       id:order.id,round:order.round,createdAt:order.createdAt,direction:order.direction,price:order.price,
       streakFirstRound:order.streakSignal?.firstRound,streakLastRound:order.streakSignal?.lastRound,streakRoundsRequired:order.streakSignal?.roundsRequired,streakMarketDirection:order.streakSignal?.marketDirection,streakBuyDirection:order.streakSignal?.direction,streakObservedAt:order.streakSignal?.observedAt,
       predictionOutcome:order.prediction?.outcome,predictionWon:order.prediction?.won,
@@ -180,19 +194,19 @@ async function main() {
   const store = new RangeStore(resolve(root, 'data/trading.sqlite'));
   const venue = new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const rangeStore=new RangeStore(resolve(root,'data/range.sqlite'));
-  const gamStore=new RangeStore(resolve(root,'data/gam-mv.sqlite'));
   rangeStore.seedFrom([store]);
   const rangeVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
-  const rangeEngine=new RangeEngine(rangeStore,rangeVenue);
-  const gamVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
-  const gamEngine=new GamMvEngine(gamStore,gamVenue);
+  const rangeEngine=new RangeAdaptiveEngine(rangeStore,rangeVenue);
+  const previousStore=new Store(resolve(root,'data/previous-direction.sqlite'));
+  const previousVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
+  const previousEngine=new PreviousDirectionEngine(previousStore,previousVenue,{marketStore:rangeStore});
   const engine=new RangeLiveEngine(store,venue,rangeEngine);
-  const leadStore=new LeadStore(resolve(root,'data/lead-pair.sqlite'));
-  const leadVenue=new Polymarket({officialOpeningOnly:true});
-  const leadEngine=new LeadEngine(leadStore,leadVenue);
-  leadEngine.feed=new BinanceFeed(x=>leadEngine.sample(x));leadEngine.feed.start();
-  const engines=[rangeEngine,engine,gamEngine,leadEngine];
-  const app = createApp(engine,{onShutdown:close,rangeEngine,gamEngine,leadEngine,allowedModes:['live']});
+  const copyVenue=new Polymarket({officialOpeningOnly:true});
+  const copyObserver=new CopyObserver(resolve(root,'data/copy-observer.sqlite'),copyVenue);
+  const adaptiveObserver=new RangeAdaptiveObserver(resolve(root,'data/range-adaptive.sqlite'),rangeEngine);
+  rangeEngine.adaptiveSampler=adaptiveObserver;
+  const engines=[rangeEngine,previousEngine,engine];
+  const app = createApp(engine,{onShutdown:close,rangeEngine,previousEngine,copyObserver,adaptiveObserver,allowedModes:['live']});
   const production = process.argv.includes('--production');
   let vite;
   if (production) {
@@ -208,24 +222,25 @@ async function main() {
     console.log(`Pulse BTC 5M · http://127.0.0.1:${port}`);
     console.log('实盘 /live · 策略默认暂停');
     console.log('区间突破模拟盘 /range · 买价严格低于 0.50 · 策略默认暂停');
+    console.log('上场方向模拟盘 /previous · 买价最高 0.70 · 策略默认暂停');
   });
   server.on('error', error => { console.error(safeError(error)); process.exitCode = 1; });
-  const tick=()=>{for(const current of engines)void current.tick().catch(error=>console.error(`本次策略检查异常，下次继续运行：${safeError(error)}`));};
+  const tick=()=>{void copyObserver.tick();void adaptiveObserver.tick();for(const current of engines)void current.tick().catch(error=>console.error(`本次策略检查异常，下次继续运行：${safeError(error)}`));};
   const timer = setInterval(tick, 1000);
   tick();
   let closing = false;
   async function close() {
     if (closing) return; closing = true;for(const current of engines)current.closing=true;
-    clearInterval(timer);
-    venue.close();rangeVenue.close();gamVenue.close();leadVenue.close();leadEngine.feed.close();
+    clearInterval(timer);copyObserver.closing=true;adaptiveObserver.closing=true;copyVenue.close();
+    venue.close();rangeVenue.close();previousVenue.close();
     for(const current of engines)for(const mode of current.modes)current.stop(mode);
     server.close(); server.closeAllConnections();
     if (vite) await vite.close();
     // Outstanding venue requests have a 10s deadline. Preserve reservations until
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
-    while (engines.some(current=>current.busy||current.entryBusy||current.spotTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
-    store.close();rangeStore.close();gamStore.close();leadStore.close();process.exit(0);
+    while ((copyObserver.busy||adaptiveObserver.busy||previousEngine.history.inflight||engines.some(current=>current.busy||current.entryBusy||current.spotTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    store.close();previousStore.close();rangeStore.close();copyObserver.close();adaptiveObserver.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);
 }

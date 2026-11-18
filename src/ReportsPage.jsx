@@ -26,13 +26,15 @@ export function ReportCalendar({data,month,selected,onSelect}){
 function Metric({title,value,note,tone}){return <div className="report-metric"><span>{title}</span><strong className={tone||''}>{value}</strong><small>{note}</small></div>;}
 
 export default function ReportsPage(){
+  const [market,setMarket]=useState('range');
+  const marketTitle=market==='range'?'区间突破模拟':'上场方向模拟';
   const [dates,setDates]=useState(()=>recentDates()),[draft,setDraft]=useState(()=>recentDates());
   const [month,setMonth]=useState(()=>recentDates().endDate.slice(0,7)),[selected,setSelected]=useState(()=>recentDates().endDate);
   const [result,setResult]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState(''),[refresh,setRefresh]=useState(0),[validation,setValidation]=useState('');
-  const key=periodKey(dates),data=result?.key===key?result.data:null;
+  const key=`${market}:${periodKey(dates)}`,data=result?.key===key?result.data:null;
   useEffect(()=>{
     let stopped=false;const controller=new AbortController();setLoading(true);setError('');
-    fetch(`/range/api/paper/report?${new URLSearchParams(dates)}`,{signal:controller.signal,cache:'no-store'})
+    fetch(`/${market}/api/paper/report?${new URLSearchParams(dates)}`,{signal:controller.signal,cache:'no-store'})
       .then(async response=>{const body=await response.json();if(!response.ok)throw Error(body.error||'报表读取失败');return body;})
       .then(data=>{if(!stopped)setResult({key,data});}).catch(error=>{if(!stopped)setError(error.message);}).finally(()=>{if(!stopped)setLoading(false);});
     return ()=>{stopped=true;controller.abort();};
@@ -43,13 +45,14 @@ export default function ReportsPage(){
   const monthIndex=months.indexOf(month),summary=data?.summary,day=data?.days.find(item=>item.date===selected);
   return <div className="app reports-app"><Sidebar active="reports"/><div className="main-shell">
     <header className="topbar"><div className="breadcrumb">交易工作台 <ChevronRight size={13}/><strong>模拟盘报表</strong></div><span className="report-timezone">上海时间 · UTC+8</span></header>
-    <main className="reports-main"><section className="page-heading"><div><div className="eyebrow">PAPER TRADING REPORTS</div><h1>模拟盘报表</h1><p>按日查看区间突破模拟的交易收支与实际表现。</p></div><button className="button secondary small" disabled={loading} onClick={()=>setRefresh(value=>value+1)}><RefreshCw size={15} className={loading?'report-spinning':''}/>刷新报表</button></section>
-      <section id="report-content" aria-label="区间突破模拟报表" aria-busy={loading}>
+    <main className="reports-main"><section className="page-heading"><div><div className="eyebrow">PAPER TRADING REPORTS</div><h1>模拟盘报表</h1><p>按模拟盘查看每日交易收支与实际表现。</p></div><button className="button secondary small" disabled={loading} onClick={()=>setRefresh(value=>value+1)}><RefreshCw size={15} className={loading?'report-spinning':''}/>刷新报表</button></section>
+      <div className="report-shortcuts" aria-label="选择模拟盘">{[['range','区间突破模拟'],['previous','上场方向模拟']].map(([id,label])=><button type="button" key={id} className={`button ${market===id?'primary':'secondary'} small`} aria-pressed={market===id} onClick={()=>setMarket(id)}>{label}</button>)}</div>
+      <section id="report-content" aria-label={`${marketTitle}报表`} aria-busy={loading}>
         <form className="panel report-filter" onSubmit={event=>{event.preventDefault();apply(draft);}}><label>开始日期<input aria-label="报表开始日期" type="date" required value={draft.startDate} onChange={event=>setDraft({...draft,startDate:event.target.value})}/></label><span className="report-date-to">至</span><label>结束日期<input aria-label="报表结束日期" type="date" required value={draft.endDate} onChange={event=>setDraft({...draft,endDate:event.target.value})}/></label><button className="button primary small" type="submit">查询</button><div className="report-shortcuts">{[7,30,90].map(days=><button type="button" key={days} onClick={()=>apply(recentDates(days))}>近 {days} 天</button>)}</div></form>
         {validation&&<p className="report-error" role="alert">{validation}</p>}
         {error&&<div className="report-error" role="alert">报表读取失败：{error}{data?'；下方为上次成功读取的数据。':''}<button onClick={()=>setRefresh(value=>value+1)}>重试</button></div>}
         {!data&&loading&&<div className="report-loading"><LoaderCircle size={25} className="report-spinning"/>正在汇总每日收支…</div>}
-        {data&&<><div className="report-period"><span>{dates.startDate} — {dates.endDate} · 区间突破模拟</span><small>更新于 {new Date(data.generatedAt).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})}{loading?' · 更新中':''}</small></div>
+        {data&&<><div className="report-period"><span>{dates.startDate} — {dates.endDate} · {marketTitle}</span><small>更新于 {new Date(data.generatedAt).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})}{loading?' · 更新中':''}</small></div>
           <section className="report-summary" aria-label="时间段汇总"><Metric title="总净盈亏（已结算）" value={signed(summary.netPnl)} tone={color(summary.netPnl)} note={`手续费前盈亏 ${signed(summary.grossPnl)} · pUSD`}/><Metric title="盈亏中已计入手续费" value={money(summary.settledFees)} note="已结算订单手续费，不重复扣除"/><Metric title="总单量 / 成交单量" value={`${summary.orderCount} / ${summary.filledCount}`} note={`按下单日 · 待处理 ${summary.pendingCount} · 拒单 ${summary.rejectedCount}`}/><Metric title="已结算 / 胜率" value={`${summary.settledCount} / ${summary.winRate==null?'—':summary.winRate.toFixed(1)+'%'}`} note={`${summary.wins} 胜 · ${summary.losses} 负 · ${summary.voidCount} 非二元兑付`}/><Metric title="结算收入" value={money(summary.income)} note="按结算日 · 含返还本金"/><Metric title="买入支出" value={money(summary.spent)} note={`按下单日 · 含手续费 ${money(summary.feesPaid)}`}/></section>
           <div className="report-cash-note"><Info size={15}/><span>区间净现金流 <b className={color(summary.netCashFlow)}>{signed(summary.netCashFlow)}</b> pUSD＝结算收入−买入支出；跨日持仓会使现金流与已实现盈亏不同。预计结果不计入已实现盈亏。</span></div>
           {(summary.missingFeeCount>0||summary.missingPnlCount>0)&&<p className="report-error">部分旧记录缺少费用或盈亏字段，以上金额仅汇总现有数据。</p>}

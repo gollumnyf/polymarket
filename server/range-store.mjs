@@ -150,6 +150,11 @@ export class RangeStore extends Store {
   }
   reserveOrder(order,book){return this.transaction(()=>{
     if(!super.reserveOrder(order,book))return false;
+    if(order.adaptiveSignal){
+      // Typed immutable evidence; also created lazily for old databases before first RA-01 order.
+      this.db.exec('CREATE TABLE IF NOT EXISTS range_adaptive_order_signals(order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,model_hash TEXT NOT NULL,decision_at INTEGER NOT NULL,rule TEXT NOT NULL,regime TEXT NOT NULL,zone TEXT NOT NULL,lower_price REAL,upper_price REAL,position REAL,efficiency REAL,noise REAL,move REAL,trend TEXT,early TEXT,streak INTEGER,last_direction TEXT)');
+      const s=order.adaptiveSignal;this.db.prepare('INSERT INTO range_adaptive_order_signals VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(order.id,s.modelHash,s.decisionAt,s.rule,s.regime,s.zone,s.lower,s.upper,s.position,s.efficiency,s.noise,s.move,s.trend,s.early,s.streak,s.last);
+    }
     if(order.signalRule==='range_regime')this.db.prepare(`INSERT INTO range_order_signals(order_id,regime_id,observed_at,observed_price,${Object.values(decisionFields).join(',')}) VALUES (?,?,?,?,${Object.keys(decisionFields).map(()=>'?').join(',')})`)
       .run(order.id,order.rangeSignal.id,order.rangeSignal.priceAt,order.rangeSignal.price,...Object.keys(decisionFields).map(key=>order.rangeSignal[key]??null));
     if(order.streakSignal){
@@ -165,6 +170,12 @@ export class RangeStore extends Store {
       if(signal)order.rangeSignal={id:signal.id,priceAt:signal.priceAt,price:signal.price,rp01Enabled:signal.rp01_enabled==null?null:!!signal.rp01_enabled,rp01ReleaseId:signal.rp01_release_id,...Object.fromEntries(Object.entries({...stateFields,...decisionFields}).map(([key,column])=>[key,signal[column]]))};}
     if(order&&this.rangeReady){const signal=this.readStreak(this.db.prepare('SELECT * FROM range_streak_order_signals WHERE order_id=?').get(order.id),true);if(signal)order.streakSignal=signal;}
     return order;
+  }
+  recentAdaptiveOutcomes(session){
+    return this.db.prepare(`SELECT o.status,p.won AS predicted_won FROM orders o
+      LEFT JOIN order_predictions p ON p.order_id=o.id
+      WHERE o.mode='paper' AND o.session=? AND o.signal_rule='range_adaptive_ra01' AND o.status IN ('won','lost','open')
+      ORDER BY o.round DESC LIMIT 2`).all(session);
   }
   seedFrom(stores,now=Date.now()){
     const since=Math.floor((now-24*3600000)/RANGE_BUCKET_MS)*RANGE_BUCKET_MS;

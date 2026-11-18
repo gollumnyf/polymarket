@@ -13,7 +13,7 @@ export class RangeLiveEngine extends RangeEngine {
   }
   syncExecutionConfig(){
     const account=this.store.account('live'),config={...account.config,entryDelay:0,
-      entryWindow:this.source.store.account('paper').config.entryWindow,maxPrice:0.5,
+      entryWindow:this.source.adaptivePaper?account.config.entryWindow:this.source.store.account('paper').config.entryWindow,maxPrice:0.5,
       sameDirectionOnly:false,followPreviousAtOpen:false,reverseSignal:false};
     if(Object.keys(config).some(key=>config[key]!==account.config[key]))this.store.saveAccount({...account,config});
   }
@@ -21,7 +21,7 @@ export class RangeLiveEngine extends RangeEngine {
   pollVoteHistory(){}
   analysis(){return this.source.analysis();}
   signal(){
-    const result=this.source.signal(),sourceSpot=this.source.spot;
+    const result=this.source.adaptivePaper?this.source.legacySignal():this.source.signal(),sourceSpot=this.source.spot;
     if(result.code)return result;
     if(this.spot?.round!==sourceSpot?.round||this.spot?.conditionId!==sourceSpot?.conditionId||this.spot?.windowSeconds!==sourceSpot?.windowSeconds)
       return {...result,direction:null,code:'RANGE_FOLLOW_MARKET_MISMATCH',message:'实盘与区间突破模拟的市场场次或预言机窗口不一致，等待同一市场数据后再下单'};
@@ -30,7 +30,7 @@ export class RangeLiveEngine extends RangeEngine {
   snapshot(){
     this.syncExecutionConfig();
     const result=super.snapshot();
-    return {...result,rangeState:this.source.store.rangeState(),historyRepair:{...this.source.historyRepair},strategySource:'range'};
+    return {...result,rangeState:this.source.store.rangeState(),historyRepair:{...this.source.historyRepair},strategySource:this.source.adaptivePaper?'range_legacy':'range'};
   }
   orderSignalFields(){
     const result=super.orderSignalFields();
@@ -49,7 +49,7 @@ export class RangeLiveEngine extends RangeEngine {
     if(account.running||this.store.pending(mode).length)throw Error('请暂停实盘，并等待已有订单结算后修改参数');
     const {rangeConfig,...trading}=input,config=validateConfig(trading),shared=this.source.store.rangeConfig();
     const requested=rangeConfig?validateRangeConfig(rangeConfig):null;
-    if(requested&&Object.keys(requested).some(key=>requested[key]!==shared[key])||config.entryWindow!==this.source.store.account('paper').config.entryWindow)
+    if(requested&&Object.keys(requested).some(key=>requested[key]!==shared[key])||!this.source.adaptivePaper&&config.entryWindow!==this.source.store.account('paper').config.entryWindow)
       throw Error('区间参数和检测时长跟随区间突破模拟，请在模拟盘中修改');
     if(config.entryDelay!==0||config.maxPrice!==0.5||config.sameDirectionOnly||config.followPreviousAtOpen||config.reverseSignal)
       throw Error('实盘跟随区间突破策略，固定零延迟和触发卖一价严格低于 0.50');

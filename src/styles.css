@@ -916,8 +916,3 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
 .round-marker.bought.pending .round-result-dot { color: #dce8ee; }
 .round-buy-letter { font-size: 11px; line-height: 1; font-weight: 800; }
 .round-marker.bought.reversed .round-result-dot { outline: 2px solid #ddbf83; outline-offset: 2px; }
-
-.lead-parameters .range-summary > .range-metrics { flex-basis: 100%; width: 100%; margin-top: 12px; }
-.lead-parameters .range-summary > .range-toggle { margin-left: auto; }
-.lead-page .price-chart { height: 220px; min-height: 0; }
-@media (max-width:600px) { .lead-page .price-chart { height: 190px; } }

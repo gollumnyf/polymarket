@@ -6,7 +6,7 @@ export const DEFAULT_CONFIG = Object.freeze({
 
 export const roundStart = (now = Date.now()) => Math.floor(now / 1000 / ROUND_SECONDS) * ROUND_SECONDS;
 export const money = value => Math.round((value + Number.EPSILON) * 1e6) / 1e6;
-export const nextAmount = account => money(account.config.baseAmount * 2 ** account.losses);
+export const nextAmount = account => money(account.config.baseAmount * 2 ** (account.stakeLosses??account.losses));
 export function resetAtAmountLimit(account) {
   // The doubling-count limit remains an independent stop condition.
   if (account.losses > account.config.maxDoublings ||

@@ -30,8 +30,8 @@ export class Engine extends EventEmitter {
     const accounts = {};
     for (const mode of ['paper', 'live']) {
       const account = this.store.account(mode);
-      const pending=this.store.pending(mode), projected=this.projectAccount(account,pending);
-      accounts[mode] = { ...account, nextAmount: nextAmount(projected), status: this.status[mode],
+      const pending=this.store.pending(mode), projected=this.projectAccount(account,pending), execution=this.executionAccount(projected);
+      accounts[mode] = { ...account, nextAmount: nextAmount(execution), stakeStep:execution.stakeLosses??projected.losses, stakeProtected:!!execution.stakeProtection, status: this.status[mode],
         projectedLosses:projected.losses,projectedCycle:projected.cycle,projectedCount:projected.projectedCount,
         entryBlock: this.entryBlocks[mode] || null, activeOrders: pending,
         orderCount:this.store.orderCount(mode), historyVersion:this.store.historyVersion(mode) };
@@ -123,6 +123,7 @@ export class Engine extends EventEmitter {
     this.status[mode] = reason; this.log(mode, 'warning', reason);
   }
   projectAccount(account,pending){return projectedAccount(account,pending);}
+  executionAccount(projected){return projected;}
   accountAfterSettlement(account,pnl,won,order){return afterSettlement(account,pnl,won);}
   isPreviousStakeCycle(order,account){return false;}
   normalizeStakeCycle(mode) {
@@ -145,7 +146,7 @@ export class Engine extends EventEmitter {
     }
     // Read state again after async authentication, so a settlement cannot be overwritten.
     account = this.store.account(mode);
-    const reason = riskReason(this.projectAccount(account,this.store.pending(mode)), available);
+    const reason = riskReason(this.executionAccount(this.projectAccount(account,this.store.pending(mode))), available);
     this.store.saveAccount({ ...account, running: true, reason: null });
     this.status[mode] = '等待入场信号'; this.log(mode, 'info', '策略启动；每场只买入一次；错误不自动暂停');
     const uncertain=this.store.pending(mode).find(order=>['uncertain','placing','confirming'].includes(order.status));
@@ -171,7 +172,7 @@ export class Engine extends EventEmitter {
   blockEntry(mode,round,message,details={},book=null) {
     const account=this.store.account(mode),at=this.now(),elapsed=(at-round*1000)/1000;
     const direction=details.direction??this.entryDirection(account,round)??null;
-    const budget=nextAmount(this.projectAccount(account,this.store.pending(mode)));
+    const budget=nextAmount(this.executionAccount(this.projectAccount(account,this.store.pending(mode))));
     const code=details.code||'ENTRY_BLOCKED';
     const fullMessage=`场次 #${round}，开盘后 ${elapsed.toFixed(3)} 秒${direction?`，准备买入 ${direction}`:''}：${message}`;
     const diagnostic=this.store.saveEntryDiagnostic({configId:account.configId,budget,elapsed,entryDelay:account.config.entryDelay,entryWindow:account.config.entryWindow,
@@ -266,7 +267,7 @@ export class Engine extends EventEmitter {
     const updatedAlignment=this.alignmentReason(account,start,updatedDirection);
     if (updatedAlignment) {this.blockEntry(mode,start,updatedAlignment,{code:'SAME_DIRECTION_FILTER'});return;}
     if (updatedDirection !== direction) {this.blockEntry(mode,start,`入场信号已改变：钱包检查前 ${direction}，检查后 ${updatedDirection??'无有效方向'}，取消本次买入`,{code:'SIGNAL_CHANGED',direction:updatedDirection},book);return;}
-    const tradeAccount=this.projectAccount(account,this.store.pending(mode));
+    const tradeAccount=this.executionAccount(this.projectAccount(account,this.store.pending(mode)));
     const reason = riskReason(tradeAccount, available);
     if (reason) { this.blockEntry(mode,start,reason,{code:'RISK_LIMIT',availableBalance:available},book);return; }
     let quote;
@@ -285,7 +286,7 @@ export class Engine extends EventEmitter {
     const outcome = this.market.outcomes.find(o => o.direction === direction);
     const order = { id: randomUUID(), mode, session: account.session, round: start, end: start + 300,
       slug: this.market.slug, conditionId: this.market.conditionId, assetId: outcome.assetId,
-      outcomeIndex: outcome.index, direction, budget: nextAmount(tradeAccount), doubling: tradeAccount.losses,
+      outcomeIndex: outcome.index, direction, budget: nextAmount(tradeAccount), doubling: tradeAccount.stakeLosses??tradeAccount.losses,
       status: 'placing', createdAt: this.now(), referencePrice: this.spot?.round===start?this.spot.currentOpen:null,
       signalRule: account.config.reverseSignal?'current_round_reverse':follow?'previous_round_prediction':'current_round_open',
       signalPrice:this.spot?.round===start?this.spot.price:null,priceSource:this.spot?.round===start?this.spot.source||null:null,
@@ -293,6 +294,7 @@ export class Engine extends EventEmitter {
       feeSchedule: this.market.feeSchedule, pnl: null,...this.orderSignalFields(account,start) };
     order.entryReason=[order.entryReason||`入场规则 ${order.signalRule}：参考价 ${order.referencePrice}，当前价 ${order.signalPrice}，选择买 ${direction}`,
       `场次 #${start}，开盘后 ${((order.createdAt-start*1000)/1000).toFixed(3)} 秒；马丁第 ${order.doubling+1} 笔，预算 ${order.budget.toFixed(2)} pUSD；盘口卖一 ${book.asks[0]?.price}，预计成交均价 ${quote.price}，本次成交限价 ${quote.priceLimit}`].join('；');
+    if(tradeAccount.stakeProtection)order.entryReason+='；'+tradeAccount.stakeProtection;
     if (!this.store.reserveOrder(order, book)) return;
     if (mode === 'paper') {
       this.store.transaction(() => {
