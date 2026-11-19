@@ -407,15 +407,7 @@ git diff --check
 
 行情领先与配对已移除页面、API、引擎及 Binance 专用信号采集。旧 data/lead-pair.sqlite 只归档保留，不再被服务打开；旧 /lead 路径返回 410。
 
-### 跟单观察盘 /copy（2026-11-17）
-
-独立 SQLite：data/copy-observer.sqlite；CopyObserver 仅调用公开读取接口，绝不调用认证、buy 或任何真实订单接口。固定目标 0x13f0bcec1e2e60ec9acc3bee4d2da2fe9694a50f，只观察 BTC 5 分钟；默认开始采集，从每次启动/重新启用后的新成交起步，不回填历史成交为可跟随机会。
-
-/api/copy/state 提供统计和 20 场 SQL 分页；/api/copy/config 复用本地 Host/Origin/controlToken 校验。配置表 copy_config、原始成交 copy_fills、单场观察 copy_observations、盘口 copy_depth 均为类型化列。默认每场 6 美元机会评估（不是资金账户、没有复投收益率），买价上限 0.99、比目标价最多高 0.005、成交最大延迟 15 秒。每场只模拟首次观察方向一次；拆单聚合，卖出和反向交易仅记证据，不自动卖出。
-
-数据源是 Data API v2 /trades，显式 taker_only=false 包含 maker。2 秒轮询，游标分页，重叠 300 秒并按交易哈希/token/side/time/price/size 去重。字段时间是公共接口时间，不保证为实际撮合时间；发现时另记本地毫秒时间。当前盘口检查费用、tick、最小份额、深度、价格上限；请求后再检查暂停、时效和场次是否结束；错过不追单。记录具体原因及卖盘档位。按官方 resolution 结算，暂停仍检查已有记录；启动前历史不回放，重启未完成入场标记错过。目标收益只能显示已观察同方向买入若持有到结算的毛收益，不是其账户真实盈亏（未计完整仓位、卖出、费用、返利）。
-
-回归：tests/copy-observer.test.mjs。服务关闭应等待 observer.busy 并关闭 DB；备份清单包含 copy-observer.sqlite。
+跟单观察盘已移除页面、API 和后台采集。旧数据库 `data/copy-observer.sqlite` 仅作归档，服务不再打开；旧 `/copy` 和 `/api/copy/*` 返回 410。
 
 ### RA-01 区间组合并行研究（2026-11-17）
 

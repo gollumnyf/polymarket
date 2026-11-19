@@ -93,18 +93,7 @@ export class Engine extends EventEmitter {
         tasks.push(this.venue.balance().then(() => { delete this.errors.wallet; })
           .catch(e => { this.errors.wallet = safeError(e); }));
       }
-      if (!this.market || this.now() - this.lastMarketPoll >= 10000) {
-        this.lastMarketPoll = this.now();
-        tasks.push(this.venue.market(start).then(market => { this.market = market; delete this.errors.market; })
-          .catch(e => { this.errors.market = safeError(e); }));
-      }
-      await Promise.allSettled(tasks);
-      if(this.closing)return;
-      this.rememberOpening();
-      if (this.market?.round === start) {
-        try { this.books = await this.venue.books(this.market); delete this.errors.books; }
-        catch (e) { this.errors.books = safeError(e); }
-      }
+      await this.refreshMarketBooks(start,tasks);
       if(this.closing)return;
       this.collectPriceTicks();this.pollPredictions();
       if (this.now() - this.lastSettlementPoll >= 7000) {
@@ -116,6 +105,22 @@ export class Engine extends EventEmitter {
       }
     } catch (error) { this.runtimeIssue('system',`本次行情检查失败，策略继续运行，下次重试：${safeError(error)}`,'error'); }
     finally { this.busy = false; this.broadcast(); }
+  }
+  marketPollInterval(_start){return 10000;}
+  async refreshMarketBooks(start,tasks){
+    if(!this.market||this.now()-this.lastMarketPoll>=this.marketPollInterval(start)){
+      this.lastMarketPoll=this.now();
+      tasks.push(this.venue.market(start).then(market=>{this.market=market;delete this.errors.market;})
+        .catch(error=>{this.errors.market=safeError(error);}));
+    }
+    await Promise.allSettled(tasks);
+    if(this.closing)return;
+    this.rememberOpening();
+    if(this.market?.round===start)await this.refreshBooks(this.market);
+  }
+  async refreshBooks(market){
+    try{this.books=await this.venue.books(market);delete this.errors.books;}
+    catch(error){this.errors.books=safeError(error);}
   }
   pause(mode, reason) {
     const account = this.store.account(mode);

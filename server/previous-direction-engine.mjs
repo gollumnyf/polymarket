@@ -1,10 +1,14 @@
 import {Engine} from './engine.mjs';
-import {roundStart,simulateFill,validateConfig} from './strategy.mjs';
+import {safeError} from './polymarket.mjs';
+import {ROUND_SECONDS,roundStart,simulateFill,validateConfig} from './strategy.mjs';
 import {RoundHistory,HISTORY_COUNT} from './history.mjs';
 
 export const PREVIOUS_ENTRY_SECONDS=15;
 export const PREVIOUS_PRICE_CAP=0.7;
 const SAME_ADVANTAGE=5;
+const MARKET_PREFETCH_MS=12000;
+const sameMarket=(a,b)=>a?.round===b?.round&&a?.conditionId===b?.conditionId&&
+  a?.outcomes?.length===b?.outcomes?.length&&a?.outcomes?.every(o=>b.outcomes.some(other=>other.direction===o.direction&&other.assetId===o.assetId));
 const validDirection=direction=>direction==='UP'||direction==='DOWN';
 const inverse=direction=>direction==='UP'?'DOWN':'UP';
 const fixedConfig=config=>({...config,entryDelay:0,entryWindow:PREVIOUS_ENTRY_SECONDS,
@@ -39,7 +43,44 @@ export class PreviousDirectionEngine extends Engine{
     return super.resetStakeCycle(account);
   }
   stakeCycleLimitLabel(){return '单笔金额或加倍次数上限';}
+  prefetchNextMarket(){
+    if(this.mode!=='paper'||this.closing||this.marketPrefetchTask||!this.store.account('paper').running)return;
+    const now=this.now(),round=roundStart(now)+ROUND_SECONDS;
+    if(round*1000-now>MARKET_PREFETCH_MS||this.prefetchedMarket?.round===round||
+      (this.marketPrefetchRound===round&&now-this.marketPrefetchAt<2000))return;
+    this.marketPrefetchRound=round;this.marketPrefetchAt=now;
+    this.marketPrefetchTask=Promise.resolve().then(()=>this.venue.market(round)).then(market=>{
+      if(!this.closing&&market?.round===round&&roundStart(this.now())<round)this.prefetchedMarket=market;
+    }).catch(()=>{/* A missing upcoming market falls back to the normal opening request. */})
+      .finally(()=>{this.marketPrefetchTask=null;});
+  }
+  marketPollInterval(start){
+    return this.mode==='paper'&&!this.market?.active&&this.now()/1000-start<=PREVIOUS_ENTRY_SECONDS
+      ?1000:super.marketPollInterval(start);
+  }
+  async refreshMarketBooks(start,tasks){
+    const cached=this.prefetchedMarket;
+    if(this.mode!=='paper'||this.market||cached?.round!==start)return super.refreshMarketBooks(start,tasks);
+    this.prefetchedMarket=null;
+    this.lastMarketPoll=this.now();
+    // Only the token IDs are reused. Request fresh books and market status after the bell.
+    const booksRequest=Promise.resolve().then(()=>this.venue.books(cached)).then(books=>({books}),error=>({error}));
+    let fresh;
+    try{fresh=await this.venue.market(start);}
+    catch(error){this.errors.market=safeError(error);return;}
+    await Promise.allSettled(tasks);
+    if(this.closing||roundStart(this.now())!==start)return;
+    this.market=fresh;delete this.errors.market;
+    this.rememberOpening();
+    if(fresh?.round!==start)return;
+    if(!sameMarket(cached,fresh)){await this.refreshBooks(fresh);return;}
+    const result=await booksRequest;
+    if(this.closing||roundStart(this.now())!==start)return;
+    if(result.error)this.errors.books=safeError(result.error);
+    else{this.books=result.books;delete this.errors.books;}
+  }
   async tick(){
+    this.prefetchNextMarket();
     if(!this.closing&&this.venue.fetch&&this.venue.public)
       this.history.poll()?.catch(error=>this.runtimeIssue('system',`历史场次刷新失败：${error.message}`));
     return super.tick();

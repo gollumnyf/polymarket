@@ -3,7 +3,7 @@ import { Activity, ArrowUpRight, BarChart3, BookOpen, ExternalLink, Layers3, Set
 
 export default function Sidebar({ active, onNavigate, onSettings, onGuide, onConnection }) {
   const navigate = onNavigate || (page => location.assign('/' + page));
-  const pages = [['previous', '上场方向模拟', Layers3, null], ['copy', '跟单观察盘', Activity, '只读'], ['previous-live', '上场方向实盘', Zap, 'LIVE'], ['reports', '模拟盘报表', BarChart3, null], ['live-reports', '实盘报表', BarChart3, null]];
+  const pages = [['previous', '上场方向模拟', Layers3, null], ['previous-live', '上场方向实盘', Zap, 'LIVE'], ['reports', '模拟盘报表', BarChart3, null], ['live-reports', '实盘报表', BarChart3, null]];
   return <aside className="sidebar">
     <a href="/previous" className="brand" onClick={event => { event.preventDefault(); navigate('previous'); }}><span className="brand-icon"><Activity size={24} /></span>pulse<span className="brand-dot">.</span><span className="beta">TERMINAL</span></a>
     <div className="workspace"><span className="workspace-icon"><Layers3 size={18} /></span><div>我的交易空间<small>Personal workspace</small></div><span className="workspace-check"><ShieldCheck size={15} /></span></div>

@@ -140,3 +140,51 @@ test('previous-direction refuses earlier rounds, voids, prices over 0.70, depth 
   market(start+300);official(start,null,'void');await engine.attempt('paper');assert.equal(engine.entryBlocks.paper.code,'PREVIOUS_ROUND_VOID');assert.equal(store.orderCount('paper'),0);
   assert.equal(apiPath('paper/start','/previous'),'/previous/api/paper/start');
 });
+
+test('paper prefetches market metadata before the bell and uses opening books only after fresh status is confirmed',async t=>{
+  const {engine,store,market,official}=fixture(t);
+  official(start-300,'UP');
+  await engine.start('paper');
+  market(start-300,290);
+  const calls=[];
+  const upcoming={round:start,conditionId:'new',active:false,outcomes:[{direction:'DOWN',assetId:'down'}]};
+  const venue=engine.venue;
+  venue.market=async round=>{calls.push(['market',round]);return upcoming;};
+  venue.books=async m=>{calls.push(['books',m.round]);return {};};
+  engine.prefetchNextMarket();
+  await engine.marketPrefetchTask;
+  assert.deepEqual(calls,[['market',start]]);
+  assert.equal(engine.market.round,start-300);
+  market(start,0);
+  engine.market=null;
+  engine.books={};
+  const fresh={...upcoming,active:true,fetchedAt:start*1000,feeSchedule:{rate:.07,exponent:1}};
+  let confirm;
+  venue.market=round=>{calls.push(['market',round]);return new Promise(resolve=>{confirm=resolve;});};
+  const book={fetchedAt:start*1000,tickSize:.01,minOrderSize:5,asks:[{price:.50,size:100}]};
+  venue.books=async m=>{calls.push(['books',m.round]);return {DOWN:book};};
+  const opening=engine.refreshMarketBooks(start,[]);
+  await Promise.resolve();
+  assert.deepEqual(calls,[['market',start],['market',start],['books',start]]);
+  await engine.attempt('paper');
+  assert.equal(store.orderCount('paper'),0);
+  confirm(fresh);
+  await opening;
+  await engine.attempt('paper');
+  assert.equal(store.orderCount('paper'),1);
+});
+
+test('paper discards opening books for token IDs that failed market revalidation',async t=>{
+  const {engine,market}=fixture(t);
+  market(start);
+  engine.market=null;
+  const cached={round:start,conditionId:'old',outcomes:[{direction:'UP',assetId:'old-up'}]};
+  engine.prefetchedMarket=cached;
+  const fresh={round:start,conditionId:'new',outcomes:[{direction:'UP',assetId:'new-up'}]};
+  engine.venue.market=async()=>fresh;
+  const calls=[];
+  engine.venue.books=async m=>{calls.push(m.conditionId);return {UP:{assetId:m.outcomes[0].assetId}};};
+  await engine.refreshMarketBooks(start,[]);
+  assert.deepEqual(calls,['old','new']);
+  assert.equal(engine.books.UP.assetId,'new-up');
+});
