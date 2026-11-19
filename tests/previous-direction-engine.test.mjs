@@ -5,6 +5,31 @@ import {Store} from '../server/store.mjs';
 import {apiPath} from '../src/api.mjs';
 
 const start=1800000000;
+test('paper chart displays only ready levels from the current oracle window without changing the trade signal',t=>{
+  const {engine,official}=fixture(t);
+  official(start-300,'DOWN');engine.spot={round:start,windowSeconds:60};
+  const candidate={lower:71000,upper:72000,levelAnalysis:{ready:true}};
+  engine.chartRangeSource={spot:{round:start,windowSeconds:60},analysis:()=>({candidate,config:{edgePercent:20}})};
+  const signal=engine.signal();
+  assert.deepEqual(engine.snapshot().chartRange,{lower:71000,upper:72000,edgePercent:20,phase:'reference'});
+  assert.deepEqual(engine.snapshot().entrySignal,signal);
+  engine.chartRangeSource.spot.windowSeconds=30;
+  assert.equal(engine.snapshot().chartRange,null);
+});
+test('live uses its own execution mode, requires authentication and never starts the paper account',async t=>{
+  const store=new Store(':memory:');t.after(()=>store.close());
+  const engine=new PreviousDirectionEngine(store,{readiness:()=>({enabled:true,configured:true,authenticated:false})},{mode:'live',now:()=>start*1000});
+  assert.equal(store.account('live').running,false);
+  assert.equal(store.account('live').config.maxPrice,.7);
+  assert.equal(store.account('live').config.entryWindow,15);
+  await assert.rejects(engine.start('paper'));
+  await assert.rejects(engine.start('live'),/请先连接/);
+  const other=new PreviousDirectionEngine(store,{readiness:()=>({enabled:false})},{mode:'live',now:()=>start*1000});
+  await assert.rejects(other.start('live'));
+  assert.equal(store.account('paper').running,false);
+  assert.equal(store.account('live').running,false);
+  assert.equal(apiPath('live/start','/previous-live'),'/previous-live/api/live/start');
+});
 function fixture(t){
   const store=new Store(':memory:');let now=start*1000;
   const engine=new PreviousDirectionEngine(store,{readiness:()=>({enabled:false})},{now:()=>now});
@@ -28,6 +53,46 @@ test('previous-direction paper fills at open without a current BTC quote, uses o
   market(start+300);predict(start,'UP');await engine.attempt('paper');
   const second=store.orderForRound('paper',start+300);assert.equal(second.budget,20);assert.equal(second.direction,'UP');assert.match(second.entryReason,/接口起止价预计 UP/);
   market(start+600);predict(start+300,'UP');await engine.attempt('paper');assert.equal(store.orderForRound('paper',start+600).budget,10);
+});
+test('paper waits within the entry window for a best ask at or above the inclusive floor',async t=>{
+  const {engine,store,market,official}=fixture(t);
+  official(start-300,'UP');
+  assert.equal(store.account('paper').config.minPrice,.4);
+  assert.equal(store.account('paper').config.maxPrice,.7);
+  await engine.start('paper');
+  market(start,0,[{price:.39,size:100}]);await engine.attempt('paper');
+  assert.equal(store.orderCount('paper'),0);
+  assert.match(store.logs('paper',10).map(row=>row.message).join(' '),/卖一价低于最低买价/);
+  market(start,1,[{price:.40,size:100}]);await engine.attempt('paper');
+  assert.ok(Math.abs(store.orderForRound('paper',start).price-.4)<1e-9);
+});
+
+test('paper saves custom price bounds and does not reset them when the engine is recreated',t=>{
+  const {engine,store}=fixture(t),account=store.account('paper');
+  assert.throws(()=>engine.configure('paper',{...account.config,minPrice:.6,maxPrice:.5}),/最低买入价不能高于最高买入价/);
+  engine.configure('paper',{...account.config,minPrice:.5,maxPrice:.6});
+  const restarted=new PreviousDirectionEngine(store,engine.venue,{now:()=>start*1000});
+  const config=store.account('paper').config;
+  assert.equal(config.minPrice,.5);assert.equal(config.maxPrice,.6);
+  const book=price=>({tickSize:.01,minOrderSize:5,asks:[{price,size:100}]});
+  const fees={rate:0,exponent:1};
+  assert.throws(()=>restarted.quote(book(.49),10,config,fees),{code:'BEST_ASK_BELOW_MIN_PRICE'});
+  assert.throws(()=>restarted.quote(book(.61),10,config,fees),{code:'MAX_PRICE_BELOW_BEST_ASK'});
+  assert.equal(restarted.quote(book(.6),10,config,fees).priceLimit,.6);
+});
+
+test('paper resets the stake after a loss at the configured limit, even while settlement is pending',async t=>{
+  const {engine,store,market,predict,official}=fixture(t);
+  for(let i=1;i<=41;i++)official(start-i*300,'DOWN');
+  const a=store.account('paper');engine.configure('paper',{...a.config,maxDoublings:1,maxAmount:20});
+  await engine.start('paper');await engine.attempt('paper');
+  market(start+300);predict(start,'UP');await engine.attempt('paper');
+  assert.equal(store.orderForRound('paper',start+300).budget,20);
+  market(start+600);predict(start+300,'UP');await engine.attempt('paper');
+  assert.equal(store.orderForRound('paper',start+600).budget,10);
+  const limit={...a,config:{...a.config,maxDoublings:1},losses:1,pnl:-10};
+  const settled=engine.accountAfterSettlement(limit,-20,false);
+  assert.equal(settled.losses,0);assert.equal(settled.cycle,a.cycle+1);assert.equal(settled.pnl,-30);
 });
 test('rolling 40 chooses reverse on a tie and below a five-round advantage, then honors an advantage of exactly five',t=>{
   const {engine,predict,official}=fixture(t);

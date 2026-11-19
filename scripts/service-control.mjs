@@ -88,15 +88,15 @@ export async function runConsole(base,{answers,ensure=ensureService,stop=stopSer
   // Subscribe before startup awaits so keys entered during startup stay queued.
   const pendingAnswers=answers[Symbol.asyncIterator]?.()||answers[Symbol.iterator]();
   const connect=async()=>{const service=await ensure(base);write(`服务正在运行：${base} · PID ${service.pid}`);};
-  try{await connect();if(openOnStart)await open(`${base}/paper`);}catch(error){write(error.message);}
-  const menu=()=>write('\n==================================================\n  Polymarket BTC 5M 服务控制台\n  1. 打开模拟盘\n  2. 打开实盘\n  3. 停止整个服务并退出\n  4. 重试启动 / 检查服务\n  5. 打开官方同向模拟（≤ 0.50）\n  6. 打开区间突破模拟（< 0.50）\n  0. 关闭控制窗口，后台服务继续运行\n==================================================\n日志：data/server-out.log 和 data/server-error.log\n请选择 [1/2/3/4/5/6/0]，按回车确认：');
+  try{await connect();if(openOnStart)await open(`${base}/previous`);}catch(error){write(error.message);}
+  const menu=()=>write('\n==================================================\n  Polymarket BTC 5M 服务控制台\n  1. 打开上场方向模拟\n  2. 打开上场方向实盘\n  3. 停止整个服务并退出\n  4. 重试启动 / 检查服务\n  5. 打开实盘报表\n  6. 打开模拟盘报表\n  0. 关闭控制窗口，后台服务继续运行\n==================================================\n日志：data/server-out.log 和 data/server-error.log\n请选择 [1/2/3/4/5/6/0]，按回车确认：');
   menu();
   for await(const answer of pendingAnswers){
     const action=answer.trim();
     if(action==='0'){write('已关闭控制台，后台服务继续运行。需要停止时请双击“停止服务.bat”。');return;}
     try{
       if(action==='3'){write('正在暂停策略并停止服务，请稍候…');write(stoppedMessage(await stop(base)));return;}
-      if(['1','2','5','6'].includes(action))await open(`${base}/${action==='1'?'paper':action==='2'?'live':action==='5'?'momentum':'range'}`);
+      if(['1','2','5','6'].includes(action))await open(`${base}/${action==='1'?'previous':action==='2'?'previous-live':action==='5'?'live-reports':'reports'}`);
       else if(action==='4')await connect();
       else write('请输入 1、2、3、4、5、6 或 0。');
     }catch(error){write(error.message);}

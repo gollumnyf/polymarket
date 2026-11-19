@@ -1,7 +1,7 @@
 export const ROUND_SECONDS = 300;
 export const DEFAULT_CONFIG = Object.freeze({
   baseAmount: 10, initialBalance: 1000, maxAmount: 320, maxDoublings: 6,
-  stopLoss: 500, entryDelay: 5, entryWindow: 45, slippage: 2, maxPrice: 0.85, sameDirectionOnly: false, followPreviousAtOpen: false, reverseSignal:false,
+  stopLoss: 500, entryDelay: 5, entryWindow: 45, slippage: 2, maxPrice: 0.85, minPrice: 0.4, sameDirectionOnly: false, followPreviousAtOpen: false, reverseSignal:false,
 });
 
 export const roundStart = (now = Date.now()) => Math.floor(now / 1000 / ROUND_SECONDS) * ROUND_SECONDS;
@@ -23,7 +23,7 @@ export function validateConfig(input) {
   const ranges = {
     baseAmount: [1, 100000], initialBalance: [1, 10000000], maxAmount: [1, 1000000],
     maxDoublings: [0, 16], stopLoss: [1, 1000000], entryDelay: [0, 240],
-    entryWindow: [1, 299], slippage: [0, 20], maxPrice: [0.01, 0.99],
+    entryWindow: [1, 299], slippage: [0, 20], maxPrice: [0.01, 0.99], minPrice: [0.01, 0.99],
   };
   for (const [key, [min, max]] of Object.entries(ranges)) {
     if (typeof config[key] !== 'number' || !Number.isFinite(config[key]) || config[key] < min || config[key] > max)
@@ -52,8 +52,8 @@ export function riskReason(account, available) {
   return null;
 }
 
-export function afterSettlement(account, pnl, won) {
-  return resetAtAmountLimit({ ...account, pnl: money(account.pnl + pnl), cyclePnl: won ? 0 : money(account.cyclePnl + pnl),
+export function afterSettlement(account, pnl, won, reset=resetAtAmountLimit) {
+  return reset({ ...account, pnl: money(account.pnl + pnl), cyclePnl: won ? 0 : money(account.cyclePnl + pnl),
     losses: won ? 0 : account.losses + 1, wins: account.wins + (won ? 1 : 0),
     settled: account.settled + 1, cycle: account.cycle + (won ? 1 : 0) });
 }
@@ -66,7 +66,7 @@ export function feePerShare(price, schedule) {
 
 // The configured stake is the total budget, including taker fees. Walk the asks;
 // never assume infinite liquidity at the displayed best price.
-export function simulateFill(book, budget, config, schedule, {strictTicks=false,ignoreSlippage=false}={}) {
+export function simulateFill(book, budget, config, schedule, {strictTicks=false,ignoreSlippage=false,minimumBestAsk=null}={}) {
   let asks = book.asks.map(level => ({ price: Number(level.price), size: Number(level.size) }))
     .filter(l => l.price > 0 && l.price < 1 && Number.isFinite(l.size) && l.size > 0)
     .sort((a, b) => a.price - b.price);
@@ -87,6 +87,8 @@ export function simulateFill(book, budget, config, schedule, {strictTicks=false,
   Object.assign(evidence,{tickSize:tick,slippageLimit,rawPriceLimit,priceLimit:money(priceLimit),limitSource});
   if(asks[0].price>config.maxPrice+(strictTicks?0:1e-10))
     reject('MAX_PRICE_BELOW_BEST_ASK',`卖一价超过最高买价：卖一 ${number(asks[0].price)} > 配置上限 ${number(config.maxPrice)}，超出 ${number(asks[0].price-config.maxPrice)}；限价内可成交 0 份，预算 ${number(budget)} pUSD 全部无法成交`,{eligibleShares:0,availableBudget:0,remainingBudget:budget,nextAsk:asks[0].price});
+  if(minimumBestAsk!=null&&asks[0].price<minimumBestAsk)
+    reject('BEST_ASK_BELOW_MIN_PRICE',`卖一价低于最低买价：卖一 ${number(asks[0].price)} < 配置下限 ${number(minimumBestAsk)}；本次不触发买入`);
   if(priceLimit+1e-10<asks[0].price)
     reject('PRICE_TICK_BELOW_BEST_ASK',`按价格精度向下取整后无法买入：原始限价 ${number(rawPriceLimit)}，tickSize ${number(tick)}，有效限价 ${number(priceLimit)} < 卖一 ${number(asks[0].price)}`,{eligibleShares:0,availableBudget:0,remainingBudget:budget,nextAsk:asks[0].price});
   if(!schedule||!Number.isFinite(schedule.rate)||schedule.rate<0||!Number.isFinite(schedule.exponent))

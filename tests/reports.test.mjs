@@ -44,18 +44,23 @@ test('empty days are included and forecasts never become realized income',t=>{
   assert.equal(result.days[2].orderCount,0);assert.equal(result.summary.winRate,null);
 });
 
-test('only the range simulator exposes reports and rejects malformed ranges',async t=>{
+test('live reports isolate real orders per strategy while paper reports reject malformed ranges',async t=>{
   const stores=Array.from({length:3},()=>new Store(':memory:'));const engines=stores.map(store=>Object.assign(new EventEmitter(),{store,venue:{}}));
   stores.forEach((store,i)=>store.reserveOrder({id:'r'+i,mode:'paper',session:store.account('paper').session,round:1800000000,status:'won',createdAt:dateStart('2026-11-01'),settledAt:dateStart('2026-11-01')+1000,cost:10,fee:i,payout:20+i,pnl:10+i}));
-  const app=createApp(engines[0],{rangeEngine:engines[2]});const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+  for(const i of [0,1])stores[i].reserveOrder({id:'live'+i,mode:'live',session:stores[i].account('live').session,round:1800000000,status:'won',createdAt:dateStart('2026-11-01'),settledAt:dateStart('2026-11-01')+1000,cost:50,fee:1,payout:70+i,pnl:20+i});
+  const app=createApp(engines[0],{rangeEngine:engines[2],previousLiveEngine:engines[1],allowedModes:['live']});const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));stores.forEach(store=>store.close());});
   const base='http://127.0.0.1:'+server.address().port;
   const response=await fetch(base+'/range/api/paper/report?startDate=2026-11-01&endDate=2026-11-01');assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
   const result=await response.json();assert.equal(result.summary.netPnl,12);assert.equal(result.days.length,1);assert.equal(result.timezone,'Asia/Shanghai');
   for(const query of ['startDate=invalid','startDate=2026-11-02&endDate=2026-11-01','startDate=2026-11-01&startDate=2026-11-02'])assert.equal((await fetch(base+'/range/api/paper/report?'+query)).status,400);
-  assert.equal((await fetch(base+'/api/paper/report')).status,404);
+  assert.equal((await fetch(base+'/api/paper/report')).status,400);
   assert.equal((await fetch(base+'/momentum/api/paper/report')).status,404);
-  assert.equal((await fetch(base+'/api/live/report')).status,404);
+  for(const [path,pnl] of [['/api/live/report',20],['/previous-live/api/live/report',21]]){
+    const r=await fetch(base+path+'?startDate=2026-11-01&endDate=2026-11-01');assert.equal(r.status,200);
+    const report=await r.json();assert.equal(report.summary.orderCount,1);assert.equal(report.summary.netPnl,pnl);
+  }
+  assert.equal((await fetch(base+'/previous-live/api/paper/report')).status,400);
   assert.equal((await fetch(base+'/momentum/api/state')).status,404);
   assert.equal((await fetch(base+'/momentum/api/paper/orders')).status,404);
 });

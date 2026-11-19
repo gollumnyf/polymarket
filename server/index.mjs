@@ -1,4 +1,3 @@
-import {RangeAdaptiveObserver} from './range-adaptive-observer.mjs';
 import {RangeAdaptiveEngine} from './range-adaptive-engine.mjs';
 import {CopyObserver} from './copy-observer.mjs';
 import express from 'express';
@@ -9,17 +8,18 @@ import { Polymarket, safeError } from './polymarket.mjs';
 import { RoundHistory } from './history.mjs';
 import {MomentumEngine} from './momentum.mjs';
 import {RangeEngine} from './range-engine.mjs';
-import {RangeLiveEngine} from './range-live-engine.mjs';
+import {Engine} from './engine.mjs';
 import {RangeStore} from './range-store.mjs';
 import {Store} from './store.mjs';
 import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
-import {paperReport} from './reports.mjs';
+import {tradingReport} from './reports.mjs';
 
-export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,copyObserver=null,adaptiveObserver=null,allowedModes=['paper','live'] } = {}) {
+export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,previousLiveEngine=null,copyObserver=null,adaptiveObserver=null,allowedModes=['paper','live'],legacyRangeLiveRetired=false } = {}) {
   const app = express();
   app.disable('x-powered-by');
   if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,adaptiveObserver,allowedModes:['paper']}));
   if(previousEngine)app.use('/previous',createApp(previousEngine,{history:previousEngine.history,onShutdown,allowedModes:['paper']}));
+  if(previousLiveEngine)app.use('/previous-live',createApp(previousLiveEngine,{history:previousLiveEngine.history,onShutdown,allowedModes:['live']}));
   app.use('/gam',(req,res)=>res.status(410).json({error:'GAM 均值方差模块已移除'}));
   app.use('/lead',(req,res)=>res.status(410).json({error:'行情领先与配对模块已移除'}));
   const token = randomBytes(32).toString('hex');
@@ -52,6 +52,7 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     app.get('/api/copy/state',(req,res)=>{res.setHeader('Cache-Control','no-store');res.json({...copyObserver.snapshot(req.query.page),controlToken:token});});
     app.post('/api/copy/config',(req,res,next)=>{try{copyObserver.configure(req.body);res.json({...copyObserver.snapshot(),controlToken:token});}catch(e){res.status(400).json({error:e.message});}});
   }
+  if(legacyRangeLiveRetired)app.use('/api/live',(_req,res)=>res.status(410).json({error:'区间突破实盘已移除，请使用上场方向实盘'}));
   for(const mode of ['paper','live'])if(!allowedModes.includes(mode))app.use('/api/'+mode,(req,res)=>res.status(400).json({error:mode==='live'?'此页面仅支持模拟交易':'此页面仅支持实盘交易'}));
   app.get('/api/health', (req, res) => {res.setHeader('Cache-Control','no-store');res.json({ ok: true, now: Date.now(),service });});
   app.post('/api/service/shutdown',(req,res)=>{
@@ -60,8 +61,8 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     res.json({ok:true,instanceId:service.instanceId,message:'正在停止服务'});
   });
   app.get('/api/state', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.json({ ...engine.snapshot(), controlToken: token }); });
-  if(!allowedModes.includes('live'))app.get('/api/paper/report',(req,res,next)=>{
-    try {res.setHeader('Cache-Control','no-store');res.json(paperReport(engine.store,{startDate:req.query.startDate,endDate:req.query.endDate}));}
+  for(const mode of allowedModes.length===1?allowedModes:[])app.get(`/api/${mode}/report`,(req,res,next)=>{
+    try {res.setHeader('Cache-Control','no-store');res.json(tradingReport(engine.store,mode,{startDate:req.query.startDate,endDate:req.query.endDate}));}
     catch(error){next(error);}
   });
   app.get('/api/history', async (req, res, next) => {
@@ -192,21 +193,29 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
 async function main() {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const store = new RangeStore(resolve(root, 'data/trading.sqlite'));
-  const venue = new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
+  const archive=store.pending().length?new Engine(store,new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true}),{modes:[]}):null;
   const rangeStore=new RangeStore(resolve(root,'data/range.sqlite'));
   rangeStore.seedFrom([store]);
   const rangeVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const rangeEngine=new RangeAdaptiveEngine(rangeStore,rangeVenue);
+  // Retain market data for the chart and settle any archived positions without placing new orders.
+  rangeEngine.modes=[];
   const previousStore=new Store(resolve(root,'data/previous-direction.sqlite'));
   const previousVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const previousEngine=new PreviousDirectionEngine(previousStore,previousVenue,{marketStore:rangeStore});
-  const engine=new RangeLiveEngine(store,venue,rangeEngine);
+  previousEngine.chartRangeSource=rangeEngine;
+  const previousLiveStore=new Store(resolve(root,'data/previous-direction-live.sqlite'));
+  const previousLiveVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
+  const previousLiveEngine=new PreviousDirectionEngine(previousLiveStore,previousLiveVenue,{mode:'live',marketStore:rangeStore,previousMarketStore:previousStore});
   const copyVenue=new Polymarket({officialOpeningOnly:true});
   const copyObserver=new CopyObserver(resolve(root,'data/copy-observer.sqlite'),copyVenue);
-  const adaptiveObserver=new RangeAdaptiveObserver(resolve(root,'data/range-adaptive.sqlite'),rangeEngine);
-  rangeEngine.adaptiveSampler=adaptiveObserver;
-  const engines=[rangeEngine,previousEngine,engine];
-  const app = createApp(engine,{onShutdown:close,rangeEngine,previousEngine,copyObserver,adaptiveObserver,allowedModes:['live']});
+  const engines=[rangeEngine,previousEngine,previousLiveEngine,...(archive?[archive]:[])];
+  const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,copyObserver,allowedModes:[],legacyRangeLiveRetired:true});
+  app.get(['/','/paper','/momentum','/momentum/'],(_req,res)=>res.redirect('/previous'));
+  app.get(['/live','/live/'],(_req,res)=>res.redirect('/previous-live'));
+  app.use('/live',(_req,res)=>res.status(410).json({error:'区间突破实盘已移除，请使用上场方向实盘'}));
+  app.get(['/range','/range/'],(_req,res)=>res.redirect('/previous'));
+  app.use('/range',(_req,res)=>res.status(410).json({error:'区间突破模拟已移除，请使用上场方向模拟'}));
   const production = process.argv.includes('--production');
   let vite;
   if (production) {
@@ -220,27 +229,26 @@ async function main() {
   const port = Number(process.env.PORT || 3100);
   const server = app.listen(port, '127.0.0.1', () => {
     console.log(`Pulse BTC 5M · http://127.0.0.1:${port}`);
-    console.log('实盘 /live · 策略默认暂停');
-    console.log('区间突破模拟盘 /range · 买价严格低于 0.50 · 策略默认暂停');
-    console.log('上场方向模拟盘 /previous · 买价最高 0.70 · 策略默认暂停');
+    console.log('上场方向模拟盘 /previous · 买入价格可配置 · 策略默认暂停');
+    console.log('上场方向实盘 /previous-live · 策略默认暂停');
   });
   server.on('error', error => { console.error(safeError(error)); process.exitCode = 1; });
-  const tick=()=>{void copyObserver.tick();void adaptiveObserver.tick();for(const current of engines)void current.tick().catch(error=>console.error(`本次策略检查异常，下次继续运行：${safeError(error)}`));};
+  const tick=()=>{void copyObserver.tick();for(const current of engines)void current.tick().catch(error=>console.error(`本次策略检查异常，下次继续运行：${safeError(error)}`));};
   const timer = setInterval(tick, 1000);
   tick();
   let closing = false;
   async function close() {
     if (closing) return; closing = true;for(const current of engines)current.closing=true;
-    clearInterval(timer);copyObserver.closing=true;adaptiveObserver.closing=true;copyVenue.close();
-    venue.close();rangeVenue.close();previousVenue.close();
+    clearInterval(timer);copyObserver.closing=true;copyVenue.close();
+    archive?.venue.close();rangeVenue.close();previousVenue.close();previousLiveVenue.close();
     for(const current of engines)for(const mode of current.modes)current.stop(mode);
     server.close(); server.closeAllConnections();
     if (vite) await vite.close();
     // Outstanding venue requests have a 10s deadline. Preserve reservations until
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
-    while ((copyObserver.busy||adaptiveObserver.busy||previousEngine.history.inflight||engines.some(current=>current.busy||current.entryBusy||current.spotTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
-    store.close();previousStore.close();rangeStore.close();copyObserver.close();adaptiveObserver.close();process.exit(0);
+    while ((copyObserver.busy||engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    store.close();previousStore.close();previousLiveStore.close();rangeStore.close();copyObserver.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);
 }

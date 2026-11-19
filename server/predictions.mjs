@@ -30,13 +30,13 @@ export function predictionFromPrices(order, prices, now) {
 
 // Confirmed account statistics remain untouched until official settlement.
 // Pending predictions only advance the stake sequence in round order.
-export function projectedAccount(account, pending) {
-  let sequence=resetAtAmountLimit(account), projectedCount=0, amountLimitResets=sequence===account?0:1;
+export function projectedAccount(account, pending, reset=resetAtAmountLimit) {
+  let sequence=reset(account), projectedCount=0, amountLimitResets=sequence===account?0:1;
   for (const order of pending) {
     if (order.status !== 'open' || !order.prediction) break;
     const advanced={...sequence,losses:order.prediction.won?0:sequence.losses+1,
       cycle:sequence.cycle+(order.prediction.won?1:0)};
-    sequence=resetAtAmountLimit(advanced);
+    sequence=reset(advanced);
     if(sequence!==advanced)amountLimitResets++;
     projectedCount++;
   }

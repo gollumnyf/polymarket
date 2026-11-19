@@ -41,16 +41,16 @@
 
 | 页面 | 路径 | API 前缀 | 数据文件 |
 | --- | --- | --- | --- |
-| 区间突破模拟 | `/range` | `/range/api` | `data/range.sqlite` |
 | 上场方向模拟 | `/previous` | `/previous/api` | `data/previous-direction.sqlite` |
-| 区间策略实盘 | `/live` | `/api` | `data/trading.sqlite` |
-| 模拟报表 | `/reports` | `/range/api/paper/report`、`/previous/api/paper/report` | 按模拟盘分别统计 |
+| 上场方向实盘 | `/previous-live` | `/previous-live/api` | `data/previous-direction-live.sqlite` |
+| 实盘报表 | `/live-reports` | `/previous-live/api/live/report` | 使用上场方向数据库的实盘订单，上海时间汇总 |
+| 模拟报表 | `/reports` | `/previous/api/paper/report` | 上场方向模拟 |
 
-`server/previous-direction-engine.mjs` 复用通用模拟成交和马丁资金规则，开盘 0–15 秒检查紧邻上一场数据。比较最近 40 个已结束场次与各自上一场（读取 41 个场次），同向命中至少比反向多 5 场才跟随，否则反买。反买时连续两次同向（最近三场方向相同）暂停一场，下一场恢复判断。优先使用官方结果，缺失或作废使相邻配对不计票，不跨场比较。未结算用同源预计，不读取本场 BTC 涨跌作为入场条件。按当前卖盘逐档模拟成交，单份不得超过 0.70；账户和交易记录独立。
+`server/previous-direction-engine.mjs` 复用通用模拟成交和马丁资金规则，开盘 0–15 秒检查紧邻上一场数据。比较最近 40 个已结束场次与各自上一场（读取 41 个场次），同向命中至少比反向多 5 场才跟随，否则反买。反买时连续两次同向（最近三场方向相同）暂停一场，下一场恢复判断。优先使用官方结果，缺失或作废使相邻配对不计票，不跨场比较。未结算用同源预计，不读取本场 BTC 涨跌作为入场条件。模拟盘要求卖一价在可配置范围内（默认 0.40–0.70，含两端），再按盘口逐档模拟，成交价不得超过上限。上场方向实盘仍固定最高价 0.70；账户和交易记录独立。
 
 实盘跟随区间模拟的分析、选向和共用参数，资金、订单、日志、结算、配置记录属于实盘自己的数据库。区间模拟不启动也可以进行行情分析，不能用“模拟账户正在运行”作为实盘分析的必要条件。
 
-旧 `/paper`、`/momentum` 页面已从当前菜单移除，前端兼容入口重定向到 `/live`。代码中保留基础 Engine、Momentum 模块、兼容接口或旧字段，不代表要恢复旧菜单。启动控制台仍可能出现兼容入口，不能仅据控制台文字判断当前页面架构。
+旧 `/paper`、`/momentum` 页面已从当前菜单移除，兼容入口重定向到 `/previous`。旧区间实盘入口 `/live` 重定向到 `/previous-live`，原实盘数据留存在 `data/trading.sqlite`。代码中保留基础 Engine、Momentum 模块、兼容接口或旧字段，不代表要恢复旧菜单。启动控制台仍可能出现兼容入口，不能仅据控制台文字判断当前页面架构。
 
 各页面共用：
 
@@ -202,7 +202,7 @@ GAM 均值方差的页面、API、模型计算与后台引擎已移除。旧 `/g
 
 ### 报表
 
-`/reports` 当前只统计区间模拟。默认近 30 天，按 Asia/Shanghai 日历展示，单次最多 366 天；展示期间总盈亏、手续费、单量等。SQL 聚合，不一次加载全部订单。隐藏记录仍计入报表。
+`/reports` 当前只统计上场方向模拟。默认近 30 天，按 Asia/Shanghai 日历展示，单次最多 366 天；展示期间总盈亏、手续费、单量等。SQL 聚合，不一次加载全部订单。隐藏记录仍计入报表。
 
 ## 9. 模块定位
 
@@ -295,7 +295,7 @@ node --input-type=module -e "import {DatabaseSync} from 'node:sqlite'; const db=
 | POST `/:mode/orders/visibility`、`/:mode/logs/visibility` | `{hidden:true/false}` |
 | POST `/paper/orders/clear`、`/paper/logs/clear` | 模拟历史清空 |
 | GET `/:mode/export`、`/:mode/logs/export` | 完整 CSV，包括隐藏记录 |
-| GET `/paper/report` | 区间模拟报表，使用 `/range/api` |
+| GET `/paper/report` | 上场方向模拟报表，使用 `/previous/api` |
 | GET `/health` | 服务身份、进程和项目目录 |
 | POST `/service/shutdown` | 服务关闭 |
 

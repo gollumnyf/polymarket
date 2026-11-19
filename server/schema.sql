@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS strategy_configs (
   base_amount REAL NOT NULL, initial_balance REAL NOT NULL, max_amount REAL NOT NULL,
   max_doublings INTEGER NOT NULL, stop_loss REAL NOT NULL, entry_delay INTEGER NOT NULL,
   entry_window INTEGER NOT NULL, slippage REAL NOT NULL, max_price REAL NOT NULL,
+  min_price REAL NOT NULL DEFAULT 0.4 CHECK(min_price BETWEEN 0.01 AND 0.99),
   same_direction_only INTEGER NOT NULL DEFAULT 0 CHECK(same_direction_only IN (0,1)),
   follow_previous_at_open INTEGER NOT NULL DEFAULT 0 CHECK(follow_previous_at_open IN (0,1)),
   reverse_signal INTEGER NOT NULL DEFAULT 0 CHECK(reverse_signal IN (0,1)),

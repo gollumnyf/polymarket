@@ -9,7 +9,7 @@ import {mergeHistoricalRound} from './history-record.mjs';
 const schema = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
 const CONFIG = { baseAmount:'base_amount', initialBalance:'initial_balance', maxAmount:'max_amount',
   maxDoublings:'max_doublings', stopLoss:'stop_loss', entryDelay:'entry_delay',
-  entryWindow:'entry_window', slippage:'slippage', maxPrice:'max_price', sameDirectionOnly:'same_direction_only',followPreviousAtOpen:'follow_previous_at_open',reverseSignal:'reverse_signal' };
+  entryWindow:'entry_window', slippage:'slippage', maxPrice:'max_price', minPrice:'min_price', sameDirectionOnly:'same_direction_only',followPreviousAtOpen:'follow_previous_at_open',reverseSignal:'reverse_signal' };
 const SESSION = { balance:'balance', startingBalance:'starting_balance', pnl:'pnl', cyclePnl:'cycle_pnl',
   losses:'losses', wins:'wins', settled:'settled', cycle:'cycle', createdAt:'created_at' };
 const ORDER = { id:'id', mode:'mode', round:'round', session:'session', configId:'config_id', status:'status',
@@ -62,8 +62,15 @@ export class Store {
   migrate(path) {
     const table=this.db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get();
     const version=table?this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version:0;
-    if(version>10)throw new Error('数据库版本高于当前程序，禁止降级打开');
-    if(version===10)return;
+    if(version>11)throw new Error('数据库版本高于当前程序，禁止降级打开');
+    if(version===11)return;
+    if(version<10)this.migrateEntryReason(path);
+    this.transaction(()=>{
+      this.ensureConfigColumns();
+      this.db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES (11,?)').run(Date.now());
+    });
+  }
+  migrateEntryReason(path) {
     this.migrateVisibility(path);
     this.transaction(()=>{
       if(!this.db.prepare('PRAGMA table_info(orders)').all().some(c=>c.name==='entry_reason'))this.db.exec('ALTER TABLE orders ADD COLUMN entry_reason TEXT');
@@ -216,6 +223,8 @@ export class Store {
   }
   ensureConfigColumns() {
     const columns=this.db.prepare('PRAGMA table_info(strategy_configs)').all();
+    if(!columns.some(c=>c.name==='min_price'))
+      this.db.exec('ALTER TABLE strategy_configs ADD COLUMN min_price REAL NOT NULL DEFAULT 0.4 CHECK(min_price BETWEEN 0.01 AND 0.99)');
     if (columns.length && !columns.some(c=>c.name==='same_direction_only'))
       this.db.exec('ALTER TABLE strategy_configs ADD COLUMN same_direction_only INTEGER NOT NULL DEFAULT 0 CHECK(same_direction_only IN (0,1))');
     if (columns.length && !columns.some(c=>c.name==='follow_previous_at_open'))

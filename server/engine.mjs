@@ -122,15 +122,17 @@ export class Engine extends EventEmitter {
     this.store.saveAccount({ ...account, running: false, reason });
     this.status[mode] = reason; this.log(mode, 'warning', reason);
   }
-  projectAccount(account,pending){return projectedAccount(account,pending);}
+  resetStakeCycle(account){return resetAtAmountLimit(account);}
+  stakeCycleLimitLabel(){return '单笔上限';}
+  projectAccount(account,pending){return projectedAccount(account,pending,a=>this.resetStakeCycle(a));}
   executionAccount(projected){return projected;}
-  accountAfterSettlement(account,pnl,won,order){return afterSettlement(account,pnl,won);}
+  accountAfterSettlement(account,pnl,won,order){return afterSettlement(account,pnl,won,a=>this.resetStakeCycle(a));}
   isPreviousStakeCycle(order,account){return false;}
   normalizeStakeCycle(mode) {
-    const account=this.store.account(mode), normalized=resetAtAmountLimit(account);
+    const account=this.store.account(mode), normalized=this.resetStakeCycle(account);
     if(normalized!==account){
       this.store.saveAccount(normalized);
-      this.log(mode,'info',`下一笔 ${nextAmount(account).toFixed(2)} 超过单笔上限 ${account.config.maxAmount.toFixed(2)}；恢复首笔 ${account.config.baseAmount.toFixed(2)} 开始新轮`);
+      this.log(mode,'info',`下一笔 ${nextAmount(account).toFixed(2)} pUSD 超过${this.stakeCycleLimitLabel()}；恢复首笔 ${account.config.baseAmount.toFixed(2)} 开始新轮`);
     }
     return normalized;
   }
@@ -350,7 +352,7 @@ export class Engine extends EventEmitter {
     if(order.prediction&&stored.source===order.prediction.source&&stored.priceAt===order.prediction.priceAt&&stored.close===order.prediction.close)return;
     const after=this.projectAccount(this.store.account(order.mode),this.store.pending(order.mode)).amountLimitResets;
     this.log(order.mode,'info',`场次 #${order.round} 预计${prediction.won?'获胜':'失利'}：起始 ${prediction.open} → ${prediction.source==='polymarket_last_second'?'同源末秒价':prediction.source==='polymarket_last_available'?'向前追溯同源报价':'平台终止价'} ${prediction.close}${prediction.source==='polymarket_last_available'?`（采样 ${new Date(prediction.priceAt).toISOString()}，距收盘 ${(order.end*1000-prediction.priceAt)/1000} 秒）`:''}${order.prediction?'；已更新之前的追溯预测':''}；资金序列按预计结果继续`);
-    if(after>before)this.log(order.mode,'info',`预计下一笔超过单笔上限，恢复首笔 ${this.store.account(order.mode).config.baseAmount.toFixed(2)} 开始新轮`);
+    if(after>before)this.log(order.mode,'info',`预计下一笔超过${this.stakeCycleLimitLabel()}，恢复首笔 ${this.store.account(order.mode).config.baseAmount.toFixed(2)} 开始新轮`);
   }
   async getRoundPrediction(round,order=null) {
     let saved=this.store.roundPrediction(round);
@@ -446,7 +448,7 @@ export class Engine extends EventEmitter {
             const previous=account;
             account = this.accountAfterSettlement(account, pnl, won, order);
             if(!won && account.losses===0 && previous.losses>=0 && !order.prediction&&!this.isPreviousStakeCycle(order,previous))
-              this.log(order.mode,'info',`下一笔超过单笔上限，恢复首笔 ${account.config.baseAmount.toFixed(2)} 开始新轮`);
+              this.log(order.mode,'info',`下一笔超过${this.stakeCycleLimitLabel()}，恢复首笔 ${account.config.baseAmount.toFixed(2)} 开始新轮`);
           }
           if (order.prediction) this.store.verifyPrediction(order.id,!mismatch,this.now());
           if (order.mode === 'paper') account.balance = money(account.balance + payout);

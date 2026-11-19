@@ -114,9 +114,11 @@ function Pagination({data,loading,onPage,onSize,onRefresh}) {
   return <nav className="history-pagination" aria-label="历史记录分页">
     <span>共 {data.total} 条 · {first}–{last} 条</span>
     <div><label>每页 <select aria-label="每页记录数" value={data.pageSize} disabled={loading} onChange={e => onSize(Number(e.target.value))}>{[10,20,50].map(size => <option key={size} value={size}>{size} 条</option>)}</select></label>
+      <button className="pagination-button" disabled={loading || data.page<=1} onClick={() => onPage(1)}>首页</button>
       <button className="pagination-button" disabled={loading || data.page<=1} onClick={() => onPage(data.page-1)} aria-label="上一页"><ChevronLeft size={15}/>上一页</button>
       <span aria-live="polite">第 {data.page} / {data.pages} 页</span>
       <button className="pagination-button" disabled={loading || data.page>=data.pages} onClick={() => onPage(data.page+1)} aria-label="下一页">下一页<ChevronRight size={15}/></button>
+      <button className="pagination-button" disabled={loading || data.page>=data.pages} onClick={() => onPage(data.pages)}>尾页</button>
       <button className="pagination-button" disabled={loading} onClick={onRefresh} title="回到第一页并加载最新记录"><RefreshCw size={14}/>刷新</button>
     </div>
   </nav>;
