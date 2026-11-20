@@ -5,7 +5,6 @@ import {RoundHistory,HISTORY_COUNT} from './history.mjs';
 
 export const PREVIOUS_ENTRY_SECONDS=15;
 export const PREVIOUS_PRICE_CAP=0.7;
-const SAME_ADVANTAGE=5;
 const MARKET_PREFETCH_MS=12000;
 const sameMarket=(a,b)=>a?.round===b?.round&&a?.conditionId===b?.conditionId&&
   a?.outcomes?.length===b?.outcomes?.length&&a?.outcomes?.every(o=>b.outcomes.some(other=>other.direction===o.direction&&other.assetId===o.assetId));
@@ -116,16 +115,14 @@ export class PreviousDirectionEngine extends Engine{
       }
       newer=older;
     }
-    const advantage=same-reverse;
-    const stats={same,reverse,estimated,missing:HISTORY_COUNT-same-reverse,total:HISTORY_COUNT,rule:this.mode==='live'&&advantage>=SAME_ADVANTAGE?'same':'reverse'};
+    const stats={same,reverse,estimated,missing:HISTORY_COUNT-same-reverse,total:HISTORY_COUNT,rule:'reverse'};
     const comparison=`近 ${stats.total} 场：同向命中 ${same} / 反向命中 ${reverse}${estimated?`，含预计 ${estimated} 场`:''}${stats.missing?`，${stats.missing} 场不可比较`:''}`;
     if(result.source==='official_void')return {...result,stats,code:'PREVIOUS_ROUND_VOID',message:`${comparison}；上一场 #${result.round} 已官方判定作废，没有 UP/DOWN 方向，本场跳过`};
     if(!result.direction)return {...result,stats,code:'PREVIOUS_DIRECTION_MISSING',message:`${comparison}；上一场 #${result.round} 尚无官方结果或预计方向，等待这一场的数据`};
-    if(stats.rule==='reverse'&&sameStreak===2)return {...result,previousDirection:result.direction,direction:null,stats,code:'PREVIOUS_REVERSE_COOLDOWN',message:`${comparison}；最近两场都与各自上一场同向（连续三场 ${result.direction}），本场暂停买入，下一场恢复判断`};
+    if(sameStreak===1)return {...result,previousDirection:result.direction,direction:null,stats,code:'PREVIOUS_REVERSE_COOLDOWN',message:`${comparison}；刚形成连续两场 ${result.direction}，本场暂停买入，下一场恢复判断`};
     const source={official:'官方最终结果',polymarket_event_metadata:'官方场次起止价预计',polymarket_crypto_price:'官方接口起止价预计',polymarket_last_second:'同源末秒价预计',polymarket_last_available:'同源收盘前最后可用价预计'}[result.source];
-    const direction=stats.rule==='same'?result.direction:inverse(result.direction);
-    const choice=this.mode==='paper'?'固定买上一场反方向':`同向减反向为 ${advantage} 场，${stats.rule==='same'?`达到 ${SAME_ADVANTAGE} 场门槛，跟随上一场`:`不足 ${SAME_ADVANTAGE} 场，反买`}`;
-    return {...result,previousDirection:result.direction,direction,stats,code:null,message:`${comparison}；${choice}；上一场 #${result.round} ${source} ${result.direction}，本场买 ${direction}`};
+    const direction=inverse(result.direction);
+    return {...result,previousDirection:result.direction,direction,stats,code:null,message:`${comparison}；固定买上一场反方向；上一场 #${result.round} ${source} ${result.direction}，本场买 ${direction}`};
   }
   entryDirection(_account,start){return this.signal(start).direction;}
   entryGuard(_account,start){const signal=this.signal(start);return signal.code?signal:null;}
@@ -133,7 +130,7 @@ export class PreviousDirectionEngine extends Engine{
     {strictTicks:true,ignoreSlippage:true,minimumBestAsk:this.mode==='paper'?config.minPrice:null});}
   orderSignalFields(_account,start){
     const s=this.signal(start);
-    return {entryReason:s.message,signalRule:this.mode==='paper'?'previous_round_fixed_reverse':`previous_round_rolling_${s.stats.rule}`,referencePrice:null,signalPrice:null};
+    return {entryReason:s.message,signalRule:'previous_round_fixed_reverse',referencePrice:null,signalPrice:null};
   }
   snapshot(){
     const s=super.snapshot(),source=this.chartRangeSource;
@@ -141,6 +138,6 @@ export class PreviousDirectionEngine extends Engine{
     const zone=analysis?.candidate;
     const chartRange=zone?.levelAnalysis?.ready&&Number.isFinite(zone.lower)&&zone.upper>zone.lower
       ?{lower:zone.lower,upper:zone.upper,edgePercent:analysis.config.edgePercent,phase:'reference'}:null;
-    return {...s,strategy:this.mode==='paper'?'previous_round_fixed_reverse':'previous_round_rolling',entrySignal:this.signal(),chartRange};
+    return {...s,strategy:'previous_round_fixed_reverse',entrySignal:this.signal(),chartRange,redemption:this.redemption?.snapshot()};
   }
 }

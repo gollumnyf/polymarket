@@ -8,6 +8,7 @@ import { RoundHistory } from './history.mjs';
 import {MomentumEngine} from './momentum.mjs';
 import {RangeEngine} from './range-engine.mjs';
 import {Engine} from './engine.mjs';
+import {LiveRedemption} from './redemption.mjs';
 import {RangeStore} from './range-store.mjs';
 import {Store} from './store.mjs';
 import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
@@ -148,7 +149,7 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     }catch(error){next(error);}
   });
   app.post('/api/live/connect', async (req, res, next) => {
-    try { await engine.venue.balance(); engine.broadcast(); res.json({ ok: true }); } catch (e) { next(e); }
+    try { await engine.venue.refreshWallet({allowChange:!engine.store.account('live').running&&!engine.store.pending('live').length&&!engine.redemption?.task}); res.json({ ok: true }); } catch (e) { next(e); } finally { engine.broadcast(); }
   });
   app.post('/api/live/reconcile', (req, res, next) => {
     try { engine.attachOrderId(req.body?.id, req.body?.venueOrderId); res.json({ ok: true }); } catch (e) { next(e); }
@@ -203,6 +204,8 @@ async function main() {
   const previousLiveStore=new Store(resolve(root,'data/previous-direction-live.sqlite'));
   const previousLiveVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
   const previousLiveEngine=new PreviousDirectionEngine(previousLiveStore,previousLiveVenue,{mode:'live',marketStore:rangeStore,previousMarketStore:previousStore});
+  previousLiveEngine.chartRangeSource=rangeEngine;
+  previousLiveEngine.redemption=new LiveRedemption(previousLiveEngine);
   const engines=[rangeEngine,previousEngine,previousLiveEngine,...(archive?[archive]:[])];
   const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,allowedModes:[],legacyRangeLiveRetired:true});
   app.get(['/','/paper','/momentum','/momentum/'],(_req,res)=>res.redirect('/previous'));
@@ -230,11 +233,12 @@ async function main() {
   server.on('error', error => { console.error(safeError(error)); process.exitCode = 1; });
   const tick=()=>{for(const current of engines)void current.tick().catch(error=>console.error(`本次策略检查异常，下次继续运行：${safeError(error)}`));};
   const timer = setInterval(tick, 1000);
+  const redemptionTimer=setInterval(()=>previousLiveEngine.redemption.tick(),2500);
   tick();
   let closing = false;
   async function close() {
     if (closing) return; closing = true;for(const current of engines)current.closing=true;
-    clearInterval(timer);
+    clearInterval(timer);clearInterval(redemptionTimer);
     archive?.venue.close();rangeVenue.close();previousVenue.close();previousLiveVenue.close();
     for(const current of engines)for(const mode of current.modes)current.stop(mode);
     server.close(); server.closeAllConnections();
@@ -242,7 +246,7 @@ async function main() {
     // Outstanding venue requests have a 10s deadline. Preserve reservations until
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
-    while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.redemption?.task||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
     store.close();previousStore.close();previousLiveStore.close();rangeStore.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);

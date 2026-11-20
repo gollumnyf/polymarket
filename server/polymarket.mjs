@@ -1,4 +1,7 @@
-import { createPublicClient, createSecureClient, OrderSide, OrderType, AssetType } from '@polymarket/client';
+import { createPublicClient, createSecureClient, relayerApiKey, OrderSide, OrderType, AssetType } from '@polymarket/client';
+import {fetchBalanceAllowance,fetchTransaction,redeemPositions} from '@polymarket/client/actions';
+import {readFileSync} from 'node:fs';
+import {parseEnv} from 'node:util';
 import { privateKey } from '@polymarket/client/viem';
 import { roundStart, signalDirection, money, feePerShare } from './strategy.mjs';
 import { PolymarketPriceFeed, oracleSpec } from './price-feed.mjs';
@@ -32,10 +35,21 @@ export function normalizeMarket(raw, start) {
     volume: Number(raw.metrics?.volume || 0), outcomes, feeSchedule, fetchedAt: Date.now() };
 }
 
+function walletConfig(env){
+  return {enabled:env.LIVE_TRADING_ENABLED==='true',key:env.POLYMARKET_PRIVATE_KEY||'',wallet:env.POLYMARKET_WALLET_ADDRESS||'',relayerKey:env.POLYMARKET_RELAYER_API_KEY||'',relayerAddress:env.POLYMARKET_RELAYER_SIGNER_ADDRESS||''};
+}
+
+function readWalletConfig(){
+  try{return walletConfig(parseEnv(readFileSync(new URL('../.env',import.meta.url),'utf8').replace(/^\uFEFF/,'')));}
+  catch(error){if(error.code==='ENOENT')return walletConfig(process.env);throw error;}
+}
+
 export class Polymarket {
-  constructor({ fetchImpl = timedFetch, priceFeed = new PolymarketPriceFeed(), now = () => Date.now(),officialOpeningOnly=false,deferOpeningPrice=false } = {}) {
+  constructor({ fetchImpl = timedFetch, priceFeed = new PolymarketPriceFeed(), now = () => Date.now(),officialOpeningOnly=false,deferOpeningPrice=false,loadWalletConfig=readWalletConfig,createWalletClient=createSecureClient,readWalletBalance=fetchBalanceAllowance } = {}) {
     this.fetch = fetchImpl;
     this.public = createPublicClient({ fetch: fetchImpl });
+    this.walletConfig=walletConfig(process.env);
+    this.loadWalletConfig=loadWalletConfig;this.createWalletClient=createWalletClient;this.readWalletBalance=readWalletBalance;
     this.secure = null;
     this.authPromise = null;
     this.liveBalance = null;
@@ -46,9 +60,10 @@ export class Polymarket {
     this.deferOpeningPrice=deferOpeningPrice;this.openingTask=null;
   }
   readiness() {
-    return { enabled: process.env.LIVE_TRADING_ENABLED === 'true',
-      configured: Boolean(process.env.POLYMARKET_PRIVATE_KEY && process.env.POLYMARKET_WALLET_ADDRESS),
-      authenticated: Boolean(this.secure), wallet: process.env.POLYMARKET_WALLET_ADDRESS || null,
+    const {enabled,key,wallet}=this.walletConfig;
+    return { enabled, configured:Boolean(key&&wallet),
+      authenticated:Boolean(this.secure&&this.balanceAt), wallet:wallet||null,
+      redemptionConfigured:Boolean(this.walletConfig.relayerKey&&this.walletConfig.relayerAddress),
       balance: this.liveBalance, balanceAt: this.balanceAt, error: this.liveError };
   }
   async authenticate() {
@@ -57,22 +72,70 @@ export class Polymarket {
     if (!ready.configured) throw new Error('请先在本机 .env 配置交易钱包地址和签名私钥，并重启服务');
     if (this.secure) return this.secure;
     if (!this.authPromise) {
-      this.authPromise = createSecureClient({ wallet: process.env.POLYMARKET_WALLET_ADDRESS,
-        signer: privateKey(process.env.POLYMARKET_PRIVATE_KEY), fetch: this.fetch })
-        .then(client => { this.secure = client; this.liveError = null; return client; })
-        .catch(error => { this.liveError = safeError(error); throw error; })
-        .finally(() => { this.authPromise = null; });
+      const {wallet,key,relayerKey,relayerAddress}=this.walletConfig;
+      let authenticating=true;
+      const connectFetch=(input,init)=>{
+        const method=(init?.method??input?.method??'GET').toUpperCase();
+        const url=new URL(input?.url??input);
+        if(authenticating&&!['GET','HEAD'].includes(method)&&!(method==='POST'&&url.hostname==='clob.polymarket.com'&&url.pathname==='/auth/api-key'))
+          throw Error('连接账户时不会发起钱包部署或其他交易，请先在 Polymarket 完成账户开通');
+        if(url.hostname==='relayer-v2.polymarket.com'&&method==='POST'){
+          if(url.pathname!=='/submit'||!this.redemptionSubmit)throw Error('当前操作未授权提交 Relayer 交易');
+          this.redemptionSubmit();
+        }
+        return this.fetch(input,init);
+      };
+      this.authPromise=Promise.resolve().then(()=>this.createWalletClient({wallet,signer:{...privateKey(key),sendTransaction:async()=>{throw Error('自动兑换仅经 Relayer 提交');}},fetch:connectFetch,
+        ...(relayerKey&&relayerAddress?{apiKey:relayerApiKey({key:relayerKey,address:relayerAddress})}:{})}))
+        .then(client=>{this.secure=client;return client;})
+        .finally(()=>{authenticating=false;this.authPromise=null;});
     }
     return this.authPromise;
   }
-  async balance() {
-    const client = await this.authenticate();
-    const result = await client.fetchBalanceAllowance({ assetType: AssetType.COLLATERAL });
-    // Official CLOB balance response is base units; pUSD uses 6 decimals.
-    const value = Number(result.balance) / 1e6;
-    if (!Number.isFinite(value) || value < 0) throw new Error('钱包余额响应无效');
-    this.liveBalance = value; this.balanceAt = Date.now();
-    return value;
+  async refreshWallet({allowChange=true}={}){
+    const next={relayerKey:'',relayerAddress:'',...this.loadWalletConfig()},current=this.walletConfig;
+    if(Object.keys(current).some(key=>(next[key]??'')!==current[key])){
+      if(!allowChange)throw Error('请先暂停实盘并处理待结订单，再切换钱包配置');
+      if(this.authPromise)throw Error('账户正在连接，请稍后重试');
+      this.walletConfig=next;this.secure=null;this.liveBalance=null;this.balanceAt=0;
+    }
+    return this.balance();
+  }
+  async balance(){
+    const config=this.walletConfig;
+    try{
+      const client=await this.authenticate();
+      const result=await this.readWalletBalance(client,{assetType:AssetType.COLLATERAL});
+      const value=Number(result.balance)/1e6;
+      if(result.balance==null||result.balance===''||!Number.isFinite(value)||value<0)throw Error('钱包余额响应无效');
+      if(config!==this.walletConfig)throw Error('钱包配置已更新，请重新读取余额');
+      this.liveBalance=value;this.balanceAt=Date.now();this.liveError=null;
+      return value;
+    }catch(error){
+      const sanitized=this.cleanWalletError(error,config);
+      if(config===this.walletConfig)this.liveError=sanitized;
+      throw Error(sanitized);
+    }
+  }
+  cleanWalletError(error,config=this.walletConfig){
+    let message=safeError(error);
+    for(const secret of [config.key,config.relayerKey])if(secret)message=message.replaceAll(secret,'[已隐藏]');
+    return message;
+  }
+  async hasRedeemablePosition(job){
+    const page=await this.public.listPositions({user:job.wallet,conditionId:job.condition_id,pageSize:50},{retries:0}).firstPage();
+    return page.items.some(p=>p.wallet.toLowerCase()===job.wallet&&p.conditionId.toLowerCase()===job.condition_id.toLowerCase()
+      &&p.assetId===job.asset_id&&p.redeemable&&Number(p.currentSize)>0);
+  }
+  async redeemPosition(job,beforeSubmit){
+    if(this.walletConfig.wallet.toLowerCase()!==job.wallet||!this.readiness().redemptionConfigured)throw Error('当前钱包不匹配或未配置 Relayer');
+    const client=await this.authenticate();
+    this.redemptionSubmit=beforeSubmit;
+    try{return await redeemPositions(client,job.market_version==='v2'?{positionId:job.asset_id}:{conditionId:job.condition_id});}
+    finally{this.redemptionSubmit=null;}
+  }
+  async redemptionReceipt(transactionId){
+    return fetchTransaction(await this.authenticate(),{transactionId},{retries:0});
   }
   async market(start) {
     const raw = await this.public.fetchMarket({ slug: `btc-updown-5m-${start}` });

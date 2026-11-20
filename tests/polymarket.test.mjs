@@ -76,3 +76,27 @@ test('missing metadata closes may use only the same official window closePrice, 
   pair={openPrice:99,closePrice:102};
   await assert.rejects(venue.roundPrices(order),/起始价不一致/);
 });
+
+test('wallet refresh reloads changed config and reads again without recreating an unchanged client',async t=>{
+  let next={enabled:true,key:'0x'+'1'.repeat(64),wallet:'0x'+'2'.repeat(40)};
+  const sessions=[];
+  let calls=0;
+  const venue=new Polymarket({
+    loadWalletConfig:()=>({...next}),
+    createWalletClient:async ({wallet})=>{const client={wallet};sessions.push(client);return client;},
+    readWalletBalance:async client=>{assert.equal(client.wallet,next.wallet);return {balance:String(++calls*1e6)};}
+  });
+  t.after(()=>venue.close());
+  assert.equal(await venue.refreshWallet(),1);
+  assert.equal(await venue.refreshWallet({allowChange:false}),2);
+  assert.equal(sessions.length,1);
+  assert.equal(venue.readiness().authenticated,true);
+  next={...next,wallet:'0x'+'3'.repeat(40)};
+  await assert.rejects(venue.refreshWallet({allowChange:false}),/请先暂停实盘/);
+  assert.equal(await venue.refreshWallet(),3);
+  assert.equal(sessions.length,2);
+  next={enabled:false,key:'',wallet:''};
+  await assert.rejects(venue.refreshWallet(),/LIVE_TRADING_ENABLED/);
+  assert.equal(venue.readiness().authenticated,false);
+  assert.equal(venue.readiness().balance,null);
+});

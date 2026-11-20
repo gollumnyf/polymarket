@@ -88,7 +88,7 @@ export class Engine extends EventEmitter {
       // Independent sources update concurrently; either failure leaves its prior value stale.
       this.pollPredictions();this.pollSpot();
       const tasks = [];
-      if (this.venue.readiness().authenticated && this.now() - this.lastBalancePoll >= 15000) {
+      if (!this.redemption && this.venue.readiness().authenticated && this.now() - this.lastBalancePoll >= 15000) {
         this.lastBalancePoll = this.now();
         tasks.push(this.venue.balance().then(() => { delete this.errors.wallet; })
           .catch(e => { this.errors.wallet = safeError(e); }));
@@ -302,7 +302,11 @@ export class Engine extends EventEmitter {
     order.entryReason=[order.entryReason||`入场规则 ${order.signalRule}：参考价 ${order.referencePrice}，当前价 ${order.signalPrice}，选择买 ${direction}`,
       `场次 #${start}，开盘后 ${((order.createdAt-start*1000)/1000).toFixed(3)} 秒；马丁第 ${order.doubling+1} 笔，预算 ${order.budget.toFixed(2)} pUSD；盘口卖一 ${book.asks[0]?.price}，预计成交均价 ${quote.price}，本次成交限价 ${quote.priceLimit}`].join('；');
     if(tradeAccount.stakeProtection)order.entryReason+='；'+tradeAccount.stakeProtection;
-    if (!this.store.reserveOrder(order, book)) return;
+    const reserved=mode==='live'&&this.redemption?this.store.transaction(()=>{
+      if(!this.store.reserveOrder(order,book))return false;
+      this.redemption.bind(order,this.market.version);return true;
+    }):this.store.reserveOrder(order,book);
+    if(!reserved)return;
     if (mode === 'paper') {
       this.store.transaction(() => {
         this.store.saveOrder({ ...order, ...quote, status: 'open' });
