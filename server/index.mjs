@@ -89,8 +89,16 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     const send = state => res.write(`data: ${JSON.stringify(state)}\n\n`);
     send(engine.snapshot());
     engine.on('update', send);
+    const feed=engine.venue.priceFeed;
+    const sendPrices=(latest,points=[latest])=>{
+      if(!res.writableEnded&&!res.destroyed&&!res.writableNeedDrain&&points.length)
+        res.write(`event: chart-prices\ndata: ${JSON.stringify(points.slice(-120))}\n\n`);
+    };
+    feed?.on?.('price',sendPrices);
+    const recent=feed?.recent?.(120);
+    if(recent?.length)sendPrices(recent.at(-1),recent);
     const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 15000);
-    req.on('close', () => { clearInterval(heartbeat); engine.off('update', send); });
+    req.on('close', () => { clearInterval(heartbeat); engine.off('update', send); feed?.off?.('price',sendPrices); });
   });
   app.get('/api/:mode/entry-block/:round',(req,res,next)=>{
     try{
@@ -206,7 +214,14 @@ async function main() {
   const previousLiveEngine=new PreviousDirectionEngine(previousLiveStore,previousLiveVenue,{mode:'live',marketStore:rangeStore,previousMarketStore:previousStore});
   previousLiveEngine.chartRangeSource=rangeEngine;
   previousLiveEngine.redemption=new LiveRedemption(previousLiveEngine);
-  const engines=[rangeEngine,previousEngine,previousLiveEngine,...(archive?[archive]:[])];
+  const tradingEngines=[previousLiveEngine,previousEngine];
+  const backgroundEngines=[rangeEngine,...(archive?[archive]:[])];
+  const engines=[...tradingEngines,...backgroundEngines];
+  const canRunBackground=()=>!tradingEngines.some(engine=>engine.hasExecutionPriority());
+  for(const engine of engines){
+    engine.canRunBackground=canRunBackground;
+    if(engine.history)engine.history.canRefresh=canRunBackground;
+  }
   const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,allowedModes:[],legacyRangeLiveRetired:true});
   app.get(['/','/paper','/momentum','/momentum/'],(_req,res)=>res.redirect('/previous'));
   app.use('/copy',(_req,res)=>res.status(410).json({error:'跟单观察盘已移除'}));
@@ -231,7 +246,7 @@ async function main() {
     console.log('上场方向实盘 /previous-live · 策略默认暂停');
   });
   server.on('error', error => { console.error(safeError(error)); process.exitCode = 1; });
-  const tick=()=>{for(const current of engines)void current.tick().catch(error=>console.error(`本次策略检查异常，下次继续运行：${safeError(error)}`));};
+  const tick=()=>{for(const current of canRunBackground()?engines:tradingEngines.filter(engine=>engine.hasExecutionPriority()))void current.tick().catch(error=>console.error(`本次策略检查异常，下次继续运行：${safeError(error)}`));};
   const timer = setInterval(tick, 1000);
   const redemptionTimer=setInterval(()=>previousLiveEngine.redemption.tick(),2500);
   tick();
@@ -246,7 +261,7 @@ async function main() {
     // Outstanding venue requests have a 10s deadline. Preserve reservations until
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
-    while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.redemption?.task||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.displayBalanceTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.redemption?.task||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
     store.close();previousStore.close();previousLiveStore.close();rangeStore.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);

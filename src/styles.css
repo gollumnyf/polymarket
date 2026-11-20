@@ -928,6 +928,8 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
 @media (max-width: 700px) { .round-history-dots.with-current { grid-template-columns: repeat(14, minmax(0, 1fr)); } }
 @media (max-width: 420px) { .round-history-dots.with-current { grid-template-columns: repeat(7, minmax(0, 1fr)); } }
 
+.round-marker.current.predicted-loss .round-result-dot { outline-color: #ddbf83; }
+.round-marker.provisional.predicted-loss .round-result-dot { outline: 2px solid #ddbf83; outline-offset: 2px; }
 .round-marker.provisional { position: relative; }
 .round-forecast-pin { position: absolute; top: 0; left: calc(50% + 2px); color: #ff5d67; fill: #ff5d6740; transform: rotate(24deg); pointer-events: none; }
 .history-pin-key { display: inline-block; vertical-align: middle; color: #ff5d67; }

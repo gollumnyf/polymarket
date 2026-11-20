@@ -198,3 +198,37 @@ test('paper discards opening books for token IDs that failed market revalidation
   assert.deepEqual(calls,['old','new']);
   assert.equal(engine.books.UP.assetId,'new-up');
 });
+
+test('entry work runs while background history, spot refresh, settlement and balance display are deferred',async t=>{
+  const {engine,store,market}=fixture(t);
+  const events=[];
+  const account=store.account('paper');store.saveAccount({...account,running:true});
+  engine.canRunBackground=()=>false;
+  engine.history.poll=()=>events.push('history');
+  engine.venue.fetch=()=>{};engine.venue.public={};
+  engine.refreshPreviousPrediction=async()=>events.push('needed previous result');
+  engine.refreshMarketBooks=async()=>events.push('books');
+  engine.pollPredictions=()=>events.push('old predictions');
+  engine.pollSpot=()=>events.push('spot');
+  engine.settlePending=()=>events.push('settlement');
+  engine.pollDisplayBalance=()=>events.push('display balance');
+  engine.attempt=async()=>events.push('entry');
+  market(start,3);assert.equal(engine.hasExecutionPriority(),true);
+  await engine.tick();
+  assert.deepEqual(events,['needed previous result','books','entry']);
+  market(start,16);assert.equal(engine.hasExecutionPriority(),false);
+  market(start,289);assert.equal(engine.hasExecutionPriority(),true);
+  events.length=0;await engine.tick();assert.deepEqual(events,[]);
+});
+
+test('an unfinished display balance refresh does not delay entry',async t=>{
+  const {engine}=fixture(t);
+  engine.venue.readiness=()=>({authenticated:true});
+  let resolveBalance;
+  engine.venue.balance=()=>new Promise(resolve=>{resolveBalance=resolve;});
+  engine.pollSpot=()=>{};engine.pollPredictions=()=>{};engine.settlePending=()=>{};
+  engine.refreshMarketBooks=async()=>{};
+  let attempts=0;engine.attempt=async()=>{attempts++;};
+  await engine.tick();assert.equal(attempts,1);assert.ok(engine.displayBalanceTask);
+  const pending=engine.displayBalanceTask;resolveBalance();await pending;
+});

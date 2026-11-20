@@ -102,6 +102,7 @@ export class RoundHistory {
     }), entryDelay,followPreviousAtOpen,reverseSignal,updatedAt: this.updatedAt, error: this.error };
   }
   poll() {
+    if (this.canRefresh?.()===false)return this.inflight;
     if (!this.inflight&&(this.currentRound !== roundStart(this.now()) || this.now() - this.lastAttempt >= 15000)) {
       this.inflight = this.refresh().finally(() => { this.inflight = null; });
     }
@@ -144,6 +145,7 @@ export class RoundHistory {
       // Keep successful batches and event prices even if another batch fails.
       const resolutions=[],errors=[];
       for(let offset=0;offset<conditions.length;offset+=20){
+        if(this.canRefresh?.()===false)break;
         try{
           const batch=await this.venue.public.fetchResolutions({conditionIds:conditions.slice(offset,offset+20)});
           if(!Array.isArray(batch))throw new Error('历史结算响应无效');

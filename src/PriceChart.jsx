@@ -68,6 +68,8 @@ export default function PriceChart({ ticks, reference, start, now, range,zone,bo
       {points.length > 1 && <>
         <path d={`${path} L ${x(last.time)} ${bottom} L ${x(points[0].time)} ${bottom} Z`} fill="url(#chartFill)"/>
         <path d={path} fill="none" stroke="#61d9b0" strokeWidth="2.3" strokeLinejoin="round" strokeLinecap="round"/>
+      </>}
+      {last && <>
         <circle cx={x(last.time)} cy={y(last.price)} r="8" fill="#61d9b0" opacity=".12"/><circle cx={x(last.time)} cy={y(last.price)} r="3.5" fill="#61d9b0"/>
       </>}
       {reference && <text x={right-8} y={y(reference)-7} textAnchor="end" className="chart-target-label"><title>本场起始价</title>target</text>}
@@ -79,7 +81,7 @@ export default function PriceChart({ ticks, reference, start, now, range,zone,bo
         <text x={tooltipX + tooltipWidth / 2} y="18" textAnchor="middle" fill="#cde8dc" fontSize="11">{time(hover.time / 1000, true)} · {fmt(hover.price)}</text>
       </g>}
     </svg>
-    {points.length < 2 && <div className="chart-empty"><Activity size={24}/><span>{ticks.length ? '正在采集本场价格…' : '连接真实行情，等待价格曲线'}</span><small>曲线仅展示本机已采集的行情数据</small></div>}
+    {!points.length && <div className="chart-empty"><Activity size={24}/><span>{ticks.length ? '正在采集本场价格…' : '连接真实行情，等待价格曲线'}</span><small>曲线仅展示本机已采集的行情数据</small></div>}
   </div>;
 }
 

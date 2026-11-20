@@ -320,3 +320,24 @@ test('history API returns saved results while the official backfill is still pen
   assert.equal(next.items.at(-1).result,'UP');
   assert.equal(next.refreshing,false);
 });
+
+test('price SSE emits batches even while the execution engine sends no snapshots',async t=>{
+  const {EventEmitter}=await import('node:events');
+  const {mergeChartPrices}=await import('../src/chart-prices.mjs');
+  const store=new Store(':memory:'),priceFeed=new EventEmitter();
+  const venue={priceFeed,readiness:()=>({enabled:false})};
+  const engine=new Engine(store,venue);
+  const server=createApp(engine).listen(0,'127.0.0.1');
+  await new Promise(resolve=>server.once('listening',resolve));
+  const abort=new AbortController();
+  t.after(()=>{abort.abort();server.closeAllConnections();server.close();store.close();});
+  const response=await fetch('http://127.0.0.1:'+server.address().port+'/api/events',{signal:abort.signal});
+  const reader=response.body.pipeThrough(new TextDecoderStream()).getReader();
+  const first=await reader.read();assert.ok(first.value.startsWith('data: '));
+  assert.equal(priceFeed.listenerCount('price'),1);
+  const points=[{time:1000,price:101},{time:2000,price:102}];
+  priceFeed.emit('price',points.at(-1),points);
+  const packet=await reader.read();assert.equal(packet.value,'event: chart-prices\ndata: '+JSON.stringify(points)+'\n\n');
+  assert.deepEqual(mergeChartPrices([{time:0,price:100},{time:1000,price:100}],points),[{time:0,price:100},...points]);
+  abort.abort();
+});

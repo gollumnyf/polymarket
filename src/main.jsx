@@ -1,5 +1,5 @@
 import RangeAdaptivePanel from './RangeAdaptivePanel.jsx';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, ArrowDownLeft, ArrowDownRight, ArrowUpRight, ArrowUp, ArrowDown, BarChart3, Bell, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, CirclePause, Clock3, Download, ExternalLink, FlaskConical, Gauge, Info, Layers3, LoaderCircle, Play, Radio, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Wallet, X, Zap } from 'lucide-react';
 import './styles.css';
@@ -12,6 +12,7 @@ import Sidebar from './Sidebar.jsx';
 import ReportsPage from './ReportsPage.jsx';
 import {entryModeLabel,oppositeDirection} from './entry-mode.mjs';
 import PriceChart from './PriceChart.jsx';
+import {mergeChartPrices} from './chart-prices.mjs';
 import AccountStats from './AccountStats.jsx';
 import StrategyControl from './StrategyControl.jsx';
 import PreviousStrategySummary from './PreviousStrategySummary.jsx';
@@ -34,6 +35,7 @@ function App() {
   const [state, setState] = useState(null);
   const [token, setToken] = useState('');
   const [connected, setConnected] = useState(false);
+  const [streamPrices,setStreamPrices]=useState([]);
   const [clock, setClock] = useState(Date.now());
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -61,6 +63,10 @@ function App() {
     events.onmessage = event => {
       const data = JSON.parse(event.data); setState(current => latestSnapshot(current, data)); setOffset(data.time - Date.now()); setConnected(true);
     };
+    events.addEventListener('chart-prices',event=>{
+      const points=JSON.parse(event.data);
+      setStreamPrices(current=>mergeChartPrices(current,points).slice(-2000));
+    });
     events.onerror = () => setConnected(false);
     events.onopen = initial;
     const timer = setInterval(() => setClock(Date.now()), 250);
@@ -69,6 +75,7 @@ function App() {
   useEffect(() => { const pop = () => setMode(/^\/previous(?:\/|$)/.test(location.pathname) ? 'paper' : 'live'); addEventListener('popstate', pop); return () => removeEventListener('popstate', pop); }, []);
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 5500); return () => clearTimeout(id); }, [toast]);
 
+  const chartTicks=useMemo(()=>mergeChartPrices(state?.ticks,streamPrices),[state?.ticks,streamPrices]);
   const account = state?.accounts[mode];
   const sequenceLosses = account?.projectedLosses ?? account?.losses ?? 0;
   const now = clock + offset;
@@ -146,9 +153,9 @@ function App() {
             <div className="market-heading"><div className="market-identity"><span className="bitcoin">₿</span><div><h2>Bitcoin <span>UP / DOWN</span></h2><p>BTC 涨跌预测 <span>·</span> 5 分钟市场</p></div></div><a className="round-link" href={`https://polymarket.com/event/btc-updown-5m-${start}`} target="_blank" rel="noreferrer"><span>{roundName(start)}</span><ExternalLink size={13}/></a></div>
             <div className="round-timing"><span className="active-label"><i/>当前场次</span><span className="round-slug">#{start}</span><span className="countdown"><Clock3 size={14}/> 距本场结束 <strong>{String(Math.floor(left / 60)).padStart(2, '0')}:{String(left % 60).padStart(2, '0')}</strong></span></div>
             <div className="round-progress"><span style={{ width: `${(300 - left) / 3}%` }}/></div>
-            <HistoricalRounds previousPrediction={previousPrediction} predictionContext={{spot,now,connected,spotError:state?.errors.spot}} currentTrade={account?.activeOrders?.find(order=>order.round===start)} momentum={automaticMode} round={start} mode={mode} entryDelay={account?.config.entryDelay ?? 5} followPreviousAtOpen={followPrevious} reverseSignal={reverseSignal}/>
+            <HistoricalRounds previousPrediction={previousPrediction} predictionContext={{spot,now,connected,spotError:state?.errors.spot}} activeOrders={activeOrders} momentum={automaticMode} round={start} mode={mode} entryDelay={account?.config.entryDelay ?? 5} followPreviousAtOpen={followPrevious} reverseSignal={reverseSignal}/>
             <div className="chart-toolbar"><div><span className="mini-label">BTC 官方参考价 <span className="price-source">{spot?.windowSeconds ? `CHAINLINK TWAP ${spot.windowSeconds}s` : 'CHAINLINK'}</span></span><div className="btc-value">{spot ? cash(spot.price) : '等待行情'}{change != null && <span className={change >= 0 ? 'price-change green' : 'price-change red'}>{change >= 0 ? <ArrowUpRight size={15}/> : <ArrowDownRight size={15}/>} 本场 {fmt(Math.abs(change))} ({fmt(Math.abs(spot.changePercent))}%)</span>}</div><div className="price-caption round-change-caption"><span>本场起始 {cash(spot?.round === start ? spot.currentOpen : null)}</span><span title="上一场起始价至上一场结束；收盘报价待公布时使用同源本场开盘边界">上一场 {previousChange == null ? '待公布' : <b className={previousChange >= 0 ? 'green' : 'red'}>{previousChange >= 0 ? '↑ 上涨' : '↓ 下跌'} {fmt(Math.abs(previousChange))}</b>}</span>{spot && !freshSpot && <b>数据待更新</b>}</div></div><div className="chart-range"><button className={range === 'round' ? 'active' : ''} onClick={() => setRange('round')}>本场</button><button className={range === '30m' ? 'active' : ''} onClick={() => setRange('30m')}>近 30 分钟</button></div></div>
-            <PriceChart zone={previous?state?.chartRange:adaptive?state?.adaptiveLevels:rangeMode?(state?.rangeState||state?.rangeAnalysis?.candidate):null} boundary={adaptive?null:rangeMode?state?.entrySignal?.boundary:null} edgePercent={(previous?state?.chartRange?.edgePercent:state?.rangeConfig?.edgePercent)??20} ticks={state?.ticks || []} reference={spot?.round === start ? spot.currentOpen : null} start={start} now={now} range={range}/>
+            <PriceChart zone={previous?state?.chartRange:adaptive?state?.adaptiveLevels:rangeMode?(state?.rangeState||state?.rangeAnalysis?.candidate):null} boundary={adaptive?null:rangeMode?state?.entrySignal?.boundary:null} edgePercent={(previous?state?.chartRange?.edgePercent:state?.rangeConfig?.edgePercent)??20} ticks={chartTicks} reference={spot?.round === start ? spot.currentOpen : null} start={start} now={now} range={range}/>
             <div className="chart-legend"><span><i className="legend-price"/> Chainlink 实时参考价</span><span><i className="legend-reference"/> 本场起始价 <b>{cash(spot?.round === start ? spot.currentOpen : null)}</b></span><span className="update-time">{freshSpot ? <><i className="live-dot"/>Polymarket 实时流</> : '等待数据连接'}</span></div>
             {rangeMode&&!adaptive&&<div className="chart-zone-legend"><span><i className="middle"/>中间区域 {Number((100-2*(state?.rangeConfig?.edgePercent??20)).toFixed(6))}% · 确认后可下单</span><span><i className="edge"/>上下边界各 {state?.rangeConfig?.edgePercent??20}% · 暂停新单</span></div>}
             <div className="outcome-grid">{['UP', 'DOWN'].map(direction => <div className={`outcome ${direction.toLowerCase()}`} key={direction}><span className="outcome-arrow">{direction === 'UP' ? <ArrowUp size={20}/> : <ArrowDown size={20}/>}</span><div><strong>{direction === 'UP' ? '看涨' : '看跌'} <span>{direction}</span></strong><small>{bookFresh(direction) ? `买一 ${fmt(Number(books[direction].bids[0]?.price || 0) * 100, 1)}¢` : '等待实时盘口'}</small></div><div className="outcome-price">{best(direction) != null ? <>{fmt(best(direction) * 100, 1)}</> : '—'}<span>卖一价格</span></div></div>)}</div>

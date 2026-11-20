@@ -19,6 +19,7 @@ export class Engine extends EventEmitter {
     this.roundPredictionTasks=new Map();
     this.spotTask=null;this.lastSpotPoll=0;
     this.modes=modes;
+    this.canRunBackground=()=>true;
     this.roundPredictionRetryAt=new Map();
   }
   log(mode, level, message) {
@@ -85,26 +86,38 @@ export class Engine extends EventEmitter {
       const start = roundStart(this.now());
       this.rememberOpening();this.collectPriceTicks();
       if (this.market?.round !== start) { this.market = null; this.books = {}; this.lastMarketPoll = 0; }
-      // Independent sources update concurrently; either failure leaves its prior value stale.
-      this.pollPredictions();this.pollSpot();
-      const tasks = [];
-      if (!this.redemption && this.venue.readiness().authenticated && this.now() - this.lastBalancePoll >= 15000) {
-        this.lastBalancePoll = this.now();
-        tasks.push(this.venue.balance().then(() => { delete this.errors.wallet; })
-          .catch(e => { this.errors.wallet = safeError(e); }));
+      // The previous result is an entry dependency; the other work stays off the awaited path.
+      if(this.canRunBackground()){
+        this.pollPredictions();this.pollSpot();
+      }else if(this.modes.some(mode=>this.store.account(mode).running)){
+        void this.refreshPreviousPrediction().catch(error=>this.runtimeIssue('system',safeError(error)));
       }
-      await this.refreshMarketBooks(start,tasks);
+      await this.refreshMarketBooks(start,[]);
       if(this.closing)return;
-      this.collectPriceTicks();this.pollPredictions();
-      if (this.now() - this.lastSettlementPoll >= 7000) {
-        this.lastSettlementPoll = this.now(); void this.settlePending();
-      }
+      this.collectPriceTicks();
+      if(!this.canRunBackground()&&this.modes.includes('live')&&this.store.pending('live').some(order=>order.status==='confirming'||order.status==='uncertain'))
+        void this.settlePending(); // A fill still being verified can block entry; do not defer it.
+
       for (const mode of this.modes){
         try{await this.attempt(mode);}
         catch(error){this.runtimeIssue(mode,`本次交易检查失败，策略继续运行，下次重试：${safeError(error)}`,'error');}
       }
+      if(this.canRunBackground()){
+        this.pollPredictions();
+        if(this.now()-this.lastSettlementPoll>=7000){
+          this.lastSettlementPoll=this.now();
+          void this.settlePending();
+        }
+        this.pollDisplayBalance();
+      }
     } catch (error) { this.runtimeIssue('system',`本次行情检查失败，策略继续运行，下次重试：${safeError(error)}`,'error'); }
     finally { this.busy = false; this.broadcast(); }
+  }
+  pollDisplayBalance(){
+    if(this.redemption||this.displayBalanceTask||!this.venue.readiness().authenticated||this.now()-this.lastBalancePoll<15000)return;
+    this.lastBalancePoll=this.now();
+    this.displayBalanceTask=Promise.resolve().then(()=>this.venue.balance()).then(()=>{delete this.errors.wallet;})
+      .catch(error=>{this.errors.wallet=safeError(error);}).finally(()=>{this.displayBalanceTask=null;});
   }
   marketPollInterval(_start){return 10000;}
   async refreshMarketBooks(start,tasks){
@@ -437,7 +450,7 @@ export class Engine extends EventEmitter {
           else {blocked.add(order.mode);continue;}
         }
         if (blocked.has(order.mode)) continue;
-        if (order.status !== 'open' || this.now() < order.end * 1000) {blocked.add(order.mode);continue;}
+        if (!this.canRunBackground() || order.status !== 'open' || this.now() < order.end * 1000) {blocked.add(order.mode);continue;}
         const result = await this.venue.resolution(order);
         if (this.closing) return;
         if (!result) {blocked.add(order.mode);continue;}

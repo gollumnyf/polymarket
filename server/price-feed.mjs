@@ -50,13 +50,13 @@ export class PolymarketPriceFeed extends EventEmitter {
       this.lastMessageAt = this.now();
       try {
         const points = decodePriceFrame(JSON.parse(String(event.data)), spec, this.now());
-        let changed=false;
+        const accepted=[];
         for (const point of points) {
-          if (!this.latest || point.time > this.latest.time) { this.latest = point; this.queue.push(point); this.points.set(point.time, point.price);changed=true; }
+          if (!this.latest || point.time > this.latest.time) { this.latest = point; this.queue.push(point); this.points.set(point.time, point.price);accepted.push(point); }
         }
         for (const time of this.points.keys()) if (time < this.now() - 7200000) this.points.delete(time);
         if (this.queue.length > 7200) this.queue = this.queue.slice(-7200);
-        if(changed)this.emit('price',{...this.latest,oracleWindow:spec.seconds});
+        if(accepted.length)this.emit('price',{...this.latest,oracleWindow:spec.seconds},accepted);
       } catch { /* heartbeat or unrelated frame */ }
     });
     const disconnected = () => {

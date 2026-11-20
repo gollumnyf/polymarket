@@ -43,6 +43,11 @@ export class PreviousDirectionEngine extends Engine{
     return super.resetStakeCycle(account);
   }
   stakeCycleLimitLabel(){return '单笔金额或加倍次数上限';}
+  hasExecutionPriority(now=this.now()){
+    if(!this.store.account(this.mode).running)return false;
+    const elapsed=now-roundStart(now)*1000;
+    return elapsed<=PREVIOUS_ENTRY_SECONDS*1000||elapsed>=ROUND_SECONDS*1000-MARKET_PREFETCH_MS;
+  }
   prefetchNextMarket(){
     if(this.closing||this.marketPrefetchTask||!this.store.account(this.mode).running)return;
     const now=this.now(),round=roundStart(now)+ROUND_SECONDS;
@@ -81,7 +86,12 @@ export class PreviousDirectionEngine extends Engine{
   }
   async tick(){
     this.prefetchNextMarket();
-    if(!this.closing&&this.venue.fetch&&this.venue.public)
+    const now=this.now();
+    if(!this.closing&&this.hasExecutionPriority(now)&&now-roundStart(now)*1000>=ROUND_SECONDS*1000-MARKET_PREFETCH_MS){
+      this.collectPriceTicks();
+      return; // Do not start obsolete book requests just before the next opening.
+    }
+    if(!this.closing&&this.canRunBackground()&&this.venue.fetch&&this.venue.public)
       this.history.poll()?.catch(error=>this.runtimeIssue('system',`历史场次刷新失败：${error.message}`));
     return super.tick();
   }

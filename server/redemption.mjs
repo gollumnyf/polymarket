@@ -26,7 +26,7 @@ export class LiveRedemption {
   hasTime(){
     const now=this.engine.now(),elapsed=now-roundStart(now)*1000;
     const deadline=this.store.account('live').config.entryWindow*1000;
-    return !this.engine.closing&&!this.engine.busy&&elapsed>deadline&&elapsed<270000;
+    return this.engine.canRunBackground?.()!==false&&!this.engine.closing&&!this.engine.busy&&elapsed>deadline&&elapsed<270000;
   }
   snapshot(){
     const ready=this.venue.readiness(),wallet=ready.wallet?.toLowerCase();
