@@ -139,7 +139,7 @@ test('history read endpoint is separate from account orders and never enables a 
   const store = new Store(':memory:');
   const engine = new Engine(store, { readiness: () => ({ enabled: false }) });
   const items = Array.from({ length: 20 }, (_, i) => ({ round: 1800000000 - (20 - i) * 300, result: i % 2 ? 'UP' : 'DOWN' }));
-  const server = createApp(engine, { history: { read: async () => ({ items, error: null }) } }).listen(0, '127.0.0.1');
+  const server = createApp(engine, { history: { readCached: () => ({ items, error: null }) } }).listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); store.close(); });
   const response = await fetch(`http://127.0.0.1:${server.address().port}/api/history`);
@@ -296,4 +296,27 @@ test('paper clear endpoints isolate datasets, protect pending orders and financi
   assert.equal(store.db.prepare('PRAGMA foreign_key_check').all().length,0);
   store.log('system','info','new shared');store.log('paper','info','new paper');
   assert.equal(store.historyPage('paper','logs').total,2);assert.deepEqual(store.account('paper'),before);
+});
+
+test('history API returns saved results while the official backfill is still pending',async t=>{
+  const store=new Store(':memory:');
+  let release;
+  const upstream=new Promise(resolve=>{release=resolve;});
+  const venue={readiness:()=>({enabled:false}),fetch:async()=>upstream};
+  const history=new RoundHistory(venue,{store,now:()=>1800000010000});
+  const round=1799999700;
+  store.saveHistoricalRound({round,end:round+300,slug:'btc-updown-5m-'+round,status:'resolved',result:'UP',open:100,close:101},1000);
+  const server=createApp(new Engine(store,venue),{history}).listen(0,'127.0.0.1');
+  await new Promise(resolve=>server.once('listening',resolve));
+  t.after(async()=>{release({ok:true,json:async()=>[]});await history.inflight;server.closeAllConnections();server.close();store.close();});
+  const base='http://127.0.0.1:'+server.address().port;
+  const get=()=>fetch(base+'/api/history',{signal:AbortSignal.timeout(3000)}).then(r=>r.json());
+  const first=await get();
+  assert.equal(first.items.at(-1).result,'UP');
+  assert.equal(first.refreshing,true);
+  release({ok:true,json:async()=>[]});
+  await history.inflight;
+  const next=await get();
+  assert.equal(next.items.at(-1).result,'UP');
+  assert.equal(next.refreshing,false);
 });

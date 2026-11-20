@@ -62,13 +62,13 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     try {res.setHeader('Cache-Control','no-store');res.json(tradingReport(engine.store,mode,{startDate:req.query.startDate,endDate:req.query.endDate}));}
     catch(error){next(error);}
   });
-  app.get('/api/history', async (req, res, next) => {
+  app.get('/api/history', (req, res, next) => {
     try {
       const mode = req.query.mode || 'paper';
       if (!allowedModes.includes(mode)) return res.status(400).json({ error: '未知交易模式' });
       const config=engine.store.account(mode).config,followPreviousAtOpen=config.followPreviousAtOpen,reverseSignal=config.reverseSignal;
       const entryDelay = config.entryDelay;
-      const data = await history.read({entryDelay,followPreviousAtOpen,reverseSignal});
+      const data = history.readCached({entryDelay,followPreviousAtOpen,reverseSignal});
       res.setHeader('Cache-Control', 'no-store');
       res.json({ ...data, mode,entryDelay,followPreviousAtOpen,reverseSignal,items: data.items.map(item => {
         const order = engine.store.orderForRound(mode,item.round);

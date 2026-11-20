@@ -107,6 +107,12 @@ export class RoundHistory {
     }
     return this.inflight;
   }
+  readCached({entryDelay = DEFAULT_CONFIG.entryDelay,followPreviousAtOpen=false,reverseSignal=false} = {}) {
+    const data=this.snapshot(entryDelay,followPreviousAtOpen,reverseSignal);
+    const refresh=this.poll();
+    if(refresh)void refresh.catch(error=>{this.error=safeError(error);});
+    return {...data,refreshing:Boolean(refresh)};
+  }
   async read({entryDelay = DEFAULT_CONFIG.entryDelay,followPreviousAtOpen=false,reverseSignal=false} = {}) {
     await this.poll();
     return this.snapshot(entryDelay,followPreviousAtOpen,reverseSignal);

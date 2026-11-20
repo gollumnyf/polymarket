@@ -784,6 +784,7 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
 /* Outcome color remains the final result; a larger ring marks a reversal. */
 .round-history-heading { flex-wrap: wrap; row-gap: 5px; }
 .history-key.reversal { width: 7px; height: 7px; background: transparent; border: 1px solid #e5bc77; }
+.history-key.current { margin-right: 2px; }
 .round-marker.reversed { height: 28px; }
 .round-marker.reversed .round-result-dot { display: grid; place-items: center; width: 16px; height: 16px; }
 .round-marker.up.reversed .round-result-dot { color: #10261e; }
@@ -919,10 +920,14 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
 
 .round-marker.bought .round-result-dot { display: grid; place-items: center; width: 17px; height: 17px; color: #101b24; }
 .round-marker.bought.pending .round-result-dot { color: #dce8ee; }
-.round-buy-letter { font-size: 11px; line-height: 1; font-weight: 800; }
+.round-buy-letter { font-size: 10px; line-height: 16px; font-weight: 800; }
 .round-marker.bought.reversed .round-result-dot { outline: 2px solid #ddbf83; outline-offset: 2px; }
 
 .round-history-dots.with-current { grid-template-columns: repeat(21, minmax(0, 1fr)); }
 .round-marker.current .round-result-dot, .history-key.current { outline: 1px dashed #9eafbd; outline-offset: 2px; }
 @media (max-width: 700px) { .round-history-dots.with-current { grid-template-columns: repeat(14, minmax(0, 1fr)); } }
 @media (max-width: 420px) { .round-history-dots.with-current { grid-template-columns: repeat(7, minmax(0, 1fr)); } }
+
+.round-marker.provisional { position: relative; }
+.round-forecast-pin { position: absolute; top: 0; left: calc(50% + 2px); color: #ff5d67; fill: #ff5d6740; transform: rotate(24deg); pointer-events: none; }
+.history-pin-key { display: inline-block; vertical-align: middle; color: #ff5d67; }

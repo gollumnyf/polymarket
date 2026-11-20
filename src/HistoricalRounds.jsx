@@ -1,19 +1,19 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDownRight, ArrowUpRight, Clock3, RotateCcw } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Clock3, Pin, RotateCcw } from 'lucide-react';
 import {liveRoundPrediction} from './live-prediction.mjs';
 import {apiPath} from './api.mjs';
-import {HISTORY_DISPLAY_COUNT,summarizeHistory} from './history-summary.mjs';
+import {HISTORY_DISPLAY_COUNT,previousRoundPreview,summarizeHistory} from './history-summary.mjs';
 import {positionHistoryTooltip} from './history-tooltip.mjs';
 
 const price = value => value == null ? '待公布' : `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const formatTime = seconds => new Date(seconds * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 const sampleTime = milliseconds => new Date(milliseconds).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second:'2-digit',hour12: false });
-const resultLabel = item => item.current ? (item.result ? `本场预计 ${item.result}` : '本场进行中 · 等待行情') : item.result || (item.status === 'void' ? '非二元兑付' : item.status === 'unavailable' ? '数据待补充' : '等待官方结算');
+const resultLabel = item => item.current ? (item.result ? `本场预计 ${item.result}` : '本场进行中 · 等待行情') : item.provisional ? `上一场预计 ${item.provisional} · 待官方结算` : item.result || (item.status === 'void' ? '非二元兑付' : item.status === 'unavailable' ? '数据待补充' : '等待官方结算');
 
 const bought = (item,mode) => mode==='paper'&&['open','won','lost','void'].includes(item.trade?.status);
 
-export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5,followPreviousAtOpen=false,reverseSignal=false,momentum=false,predictionContext,currentTrade }) {
+export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5,followPreviousAtOpen=false,reverseSignal=false,momentum=false,predictionContext,currentTrade,previousPrediction }) {
   const [history, setHistory] = useState({ items: [], error: null });
   const [hovered, setHovered] = useState(null);
   const id = useId();
@@ -28,14 +28,16 @@ export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5
     const controller = new AbortController();
     setHovered(null);
     const load = async () => {
+      let nextDelay=15000;
       try {
         const response = await fetch(apiPath(`history?mode=${mode}`), { cache: 'no-store', signal: controller.signal });
         if (!response.ok) throw new Error('历史结果暂不可用');
         const data = await response.json();
+        if(data.refreshing)nextDelay=2500;
         if (!stopped && data.mode === mode && data.entryDelay === entryDelay && Boolean(data.followPreviousAtOpen)===followPreviousAtOpen && Boolean(data.reverseSignal)===reverseSignal) setHistory(data);
       } catch (error) {
         if (!stopped) setHistory(current => ({ ...current, error: error.message }));
-      } finally { if (!stopped) timer = setTimeout(load, 15000); }
+      } finally { if (!stopped) timer = setTimeout(load,nextDelay); }
     };
     load();
     return () => { stopped = true; clearTimeout(timer); controller.abort(); };
@@ -51,9 +53,10 @@ export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5
   const items = Array.from({ length: HISTORY_DISPLAY_COUNT }, (_, i) => {
     const start = round - (HISTORY_DISPLAY_COUNT - i) * 300;
     const item = history.items.find(item => item.round === start);
-    if (!item) return { round: start, end: start + 300, status: 'loading' };
-    return history.mode === mode && history.entryDelay === entryDelay && Boolean(history.followPreviousAtOpen)===followPreviousAtOpen && Boolean(history.reverseSignal)===reverseSignal ? item
-      : { ...item,initialSignal:null,reversal:null,trade:null,entryBlock:null };
+    if (!item){const pending={round:start,end:start+300,status:'loading'};return {...pending,provisional:previousRoundPreview(pending,round,previousPrediction)};}
+    const display={...item,provisional:previousRoundPreview(item,round,previousPrediction)};
+    return history.mode === mode && history.entryDelay === entryDelay && Boolean(history.followPreviousAtOpen)===followPreviousAtOpen && Boolean(history.reverseSignal)===reverseSignal ? display
+      : { ...display,initialSignal:null,reversal:null,trade:null,entryBlock:null };
   });
   const counts = summarizeHistory(items);
   const prediction=liveRoundPrediction(round,predictionContext);
@@ -75,13 +78,13 @@ export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5
       anchor:{top:bounds.top,bottom:bounds.bottom,left:bounds.left,right:bounds.right}});
   };
   return <div className="round-history">
-    <div className="round-history-heading"><div className="round-history-counts" title="按展示场次的官方最终结果统计；尚无结果的场次不计入 UP/DOWN"><span>最近 {HISTORY_DISPLAY_COUNT} 场 + 本场</span><span className="green"><i className="history-key up"/>UP {counts.up} 场</span><span className="red"><i className="history-key down"/>DOWN {counts.down} 场</span>{counts.pending>0&&<span>待定 {counts.pending} 场</span>}{counts.void>0&&<span>作废 {counts.void} 场</span>}</div><div><span><i className="history-key reversal"/>反转·{momentum?'实际买入':<>第 {entryDelay} 秒</>}</span><span><i className="history-key pending"/>待结算</span><span><i className="history-key current"/>本场预计</span>{mode==='paper'&&<span>B · 已买入</span>}</div><small title="每行从左到右，再从上到下">早 → 近</small></div>
+    <div className="round-history-heading"><div className="round-history-counts" title="按展示场次的官方最终结果统计；尚无结果的场次不计入 UP/DOWN"><span>最近 {HISTORY_DISPLAY_COUNT} 场 + 本场</span><span className="green"><i className="history-key up"/>UP {counts.up} 场</span><span className="red"><i className="history-key down"/>DOWN {counts.down} 场</span>{counts.pending>0&&<span>待定 {counts.pending} 场</span>}{counts.void>0&&<span>作废 {counts.void} 场</span>}</div><div><span><i className="history-key reversal"/>反转·{momentum?'实际买入':<>第 {entryDelay} 秒</>}</span><span><i className="history-key pending"/>待结算</span><span><i className="history-key current"/>本场预计</span>{items.some(item=>item.provisional)&&<span><Pin size={10} className="history-pin-key" aria-hidden="true"/>上一场预计</span>}{mode==='paper'&&<span>B · 已买入</span>}</div><small title="每行从左到右，再从上到下">早 → 近</small></div>
     <div className="round-history-dots with-current" role="group" aria-label={`最近 ${HISTORY_DISPLAY_COUNT} 场 BTC 五分钟市场最终结果及本场实时预测，从左到右、从上到下按时间从早到近排列`}>
-      {items.map(item => <a href={`https://polymarket.com/event/btc-updown-5m-${item.round}`} target="_blank" rel="noopener noreferrer" key={item.round} className={`round-marker ${item.result?.toLowerCase() || 'pending'}${item.current?' current':''}${item.reversal === true ? ' reversed' : ''}${bought(item,mode)?' bought':''}`} aria-label={`${formatTime(item.round)} 至 ${formatTime(item.end)}，${resultLabel(item)}${bought(item,mode)?'，已买入 B':''}${item.reversal === true ? `，反转，初始 ${item.initialSignal.direction}` : ''}`} aria-describedby={active?.round === item.round ? id : undefined} onMouseEnter={event => show(event, item)} onMouseLeave={hide} onFocus={event => show(event, item)} onBlur={hide} onClick={event => show(event, item)}><span className="round-result-dot">{bought(item,mode)?<b className="round-buy-letter">B</b>:item.reversal === true && <RotateCcw size={10} strokeWidth={2.5}/>}</span></a>)}
+      {items.map(item => <a href={`https://polymarket.com/event/btc-updown-5m-${item.round}`} target="_blank" rel="noopener noreferrer" key={item.round} className={`round-marker ${(item.provisional||item.result)?.toLowerCase() || 'pending'}${item.current?' current':''}${item.provisional?' provisional':''}${item.reversal === true ? ' reversed' : ''}${bought(item,mode)?' bought':''}`} aria-label={`${formatTime(item.round)} 至 ${formatTime(item.end)}，${resultLabel(item)}${bought(item,mode)?'，已买入 B':''}${item.reversal === true ? `，反转，初始 ${item.initialSignal.direction}` : ''}`} aria-describedby={active?.round === item.round ? id : undefined} onMouseEnter={event => show(event, item)} onMouseLeave={hide} onFocus={event => show(event, item)} onBlur={hide} onClick={event => show(event, item)}><span className="round-result-dot">{bought(item,mode)?<b className="round-buy-letter">B</b>:item.reversal === true && <RotateCcw size={10} strokeWidth={2.5}/>}</span>{item.provisional&&<Pin className="round-forecast-pin" size={11} strokeWidth={2.4} aria-hidden="true"/>}</a>)}
     </div>
     {history.error && <p className="round-history-error">历史数据更新暂不可用，已确认结果继续保留。</p>}
     {active && createPortal(<div ref={tooltipRef} id={id} role="tooltip" tabIndex={0} onMouseEnter={keepOpen} onMouseLeave={hide} onFocus={keepOpen} onBlur={hide} data-placement={hovered.placement} className="round-history-tooltip" style={{ left: hovered.left, top: hovered.top, width: hovered.width, maxHeight:hovered.maxHeight, visibility:hovered.ready?'visible':'hidden' }}>
-      <div className="round-tooltip-heading"><strong>BTC 5 分钟</strong><span className={active.result === 'UP' ? 'green' : active.result === 'DOWN' ? 'red' : ''}>{active.result === 'UP' ? <ArrowUpRight size={13}/> : active.result === 'DOWN' ? <ArrowDownRight size={13}/> : <Clock3 size={12}/>} {resultLabel(active)}</span></div>
+      <div className="round-tooltip-heading"><strong>BTC 5 分钟</strong><span className={(active.provisional||active.result) === 'UP' ? 'green' : (active.provisional||active.result) === 'DOWN' ? 'red' : ''}>{(active.provisional||active.result) === 'UP' ? <ArrowUpRight size={13}/> : (active.provisional||active.result) === 'DOWN' ? <ArrowDownRight size={13}/> : <Clock3 size={12}/>} {resultLabel(active)}</span></div>
       <p className="round-tooltip-date">{new Date(active.round * 1000).toLocaleDateString('zh-CN')} · {formatTime(active.round)} – {formatTime(active.end)}</p>
       {active.current ? <><dl><div><dt>场次</dt><dd>#{active.round}</dd></div><div><dt>本场起始价</dt><dd>{price(active.open)}</dd></div><div><dt>最新参考价</dt><dd>{price(active.close)}</dd></div></dl><p className="round-tooltip-source">根据本场起始价和最新 Polymarket 参考价实时估算，最终结果以官方结算为准。</p></> : <>
       <HistoricalRoundDetails active={active} mode={mode} entryDelay={entryDelay} followPreviousAtOpen={followPreviousAtOpen} reverseSignal={reverseSignal} momentum={momentum}/>
@@ -92,7 +95,7 @@ export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5
 
 export function HistoricalRoundDetails({active,mode='paper',entryDelay=5,followPreviousAtOpen=false,reverseSignal=false,momentum=false}) {
   const earlier=active.closeSource==='polymarket_last_available',estimated=earlier||active.closeSource==='polymarket_last_second';
-  const expected=Number.isFinite(active.open)&&Number.isFinite(active.close)?(active.close>=active.open?'UP':'DOWN'):null;
+  const expected=active.provisional??(Number.isFinite(active.open)&&Number.isFinite(active.close)?(active.close>=active.open?'UP':'DOWN'):null);
   const comparisonLabel=active.status==='void'?'官方非二元兑付':active.forecastComparisonSource==='official_result'?'官方结果':'接口价格方向';
   return <><dl>
         <div><dt>场次</dt><dd>#{active.round}</dd></div>
