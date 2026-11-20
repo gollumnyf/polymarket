@@ -15,8 +15,8 @@ export default function Settings({account,mode,busy,pending,onSave,momentum=fals
   if(rangeMode){fields.splice(fields.findIndex(field=>field[0]==='slippage'),1);const field=fields.find(field=>field[0]==='entryWindow');field[1]='开盘后检测时长';field[2]='分钟';field[3]=1/60;field[4]=299/60;field[5]='any';}
   if(adaptive)fields.splice(fields.findIndex(field=>field[0]==='entryWindow'),1);
   if(previous){
-    for(const key of ['entryDelay','entryWindow','slippage',...(mode==='live'?['maxPrice']:[])])fields.splice(fields.findIndex(field=>field[0]===key),1);
-    if(mode==='paper')fields.splice(fields.findIndex(field=>field[0]==='maxPrice'),0,['minPrice','每份最低买入价','pUSD','.01','.99','.01']);
+    for(const key of ['entryDelay','entryWindow','slippage'])fields.splice(fields.findIndex(field=>field[0]===key),1);
+    fields.splice(fields.findIndex(field=>field[0]==='maxPrice'),0,['minPrice','每份最低买入价','pUSD','.01','.99','.01']);
   }
   if(mode==='paper')fields.push(['initialBalance','重置后的模拟初始资金','pUSD',1,10000000,'.01']);
   return <form onSubmit={event=>{event.preventDefault();onSave(rangeMode?{...withEntryMode({...config,entryWindow:Math.round(Number(entryMinutes)*60)},'independent'),rangeConfig:rangeDraft}:withEntryMode(config,selected.value));}}>

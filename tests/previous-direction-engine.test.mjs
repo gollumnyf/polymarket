@@ -67,12 +67,14 @@ test('paper waits within the entry window for a best ask at or above the inclusi
   assert.ok(Math.abs(store.orderForRound('paper',start).price-.4)<1e-9);
 });
 
-test('paper saves custom price bounds and does not reset them when the engine is recreated',t=>{
-  const {engine,store}=fixture(t),account=store.account('paper');
-  assert.throws(()=>engine.configure('paper',{...account.config,minPrice:.6,maxPrice:.5}),/最低买入价不能高于最高买入价/);
-  engine.configure('paper',{...account.config,minPrice:.5,maxPrice:.6});
-  const restarted=new PreviousDirectionEngine(store,engine.venue,{now:()=>start*1000});
-  const config=store.account('paper').config;
+for(const mode of ['paper','live'])test(mode+' saves and enforces custom price bounds across engine restarts',t=>{
+  const {engine:paper,store}=fixture(t);
+  const engine=mode==='paper'?paper:new PreviousDirectionEngine(store,paper.venue,{now:()=>start*1000,mode});
+  const account=store.account(mode);
+  assert.throws(()=>engine.configure(mode,{...account.config,minPrice:.6,maxPrice:.5}),/最低买入价不能高于最高买入价/);
+  engine.configure(mode,{...account.config,minPrice:.5,maxPrice:.6});
+  const restarted=new PreviousDirectionEngine(store,engine.venue,{now:()=>start*1000,mode});
+  const config=store.account(mode).config;
   assert.equal(config.minPrice,.5);assert.equal(config.maxPrice,.6);
   const book=price=>({tickSize:.01,minOrderSize:5,asks:[{price,size:100}]});
   const fees={rate:0,exponent:1};

@@ -716,7 +716,7 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
 .round-history { padding: 13px 21px 0; }
 .round-history-heading { display: flex; align-items: center; gap: 14px; color: #899caa; font-size: 9px; line-height: 1.5; }
 .round-history-heading>div { display: flex; align-items: center; gap: 11px; font-family: var(--mono); font-size: 10px; color: #677e8c; }
-.round-history-heading>div>span { display: flex; align-items: center; gap: 4px; }
+.round-history-heading>div>span { display: flex; align-items: center; gap: 4px; color: #999;}
 .round-history-heading>small { margin-left: auto; color: #536c7b; font-size: 10px; white-space: nowrap; }
 .history-key { height: 5px; width: 5px; display: inline-block; border-radius: 50%; background: #65727e; }
 .history-key.up { background: #6cdeb3; }
@@ -921,3 +921,8 @@ td>strong { font-family: var(--mono); font-size: 14px; font-weight: 400; }
 .round-marker.bought.pending .round-result-dot { color: #dce8ee; }
 .round-buy-letter { font-size: 11px; line-height: 1; font-weight: 800; }
 .round-marker.bought.reversed .round-result-dot { outline: 2px solid #ddbf83; outline-offset: 2px; }
+
+.round-history-dots.with-current { grid-template-columns: repeat(21, minmax(0, 1fr)); }
+.round-marker.current .round-result-dot, .history-key.current { outline: 1px dashed #9eafbd; outline-offset: 2px; }
+@media (max-width: 700px) { .round-history-dots.with-current { grid-template-columns: repeat(14, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .round-history-dots.with-current { grid-template-columns: repeat(7, minmax(0, 1fr)); } }

@@ -2,6 +2,7 @@ import {Engine} from './engine.mjs';
 import {safeError} from './polymarket.mjs';
 import {ROUND_SECONDS,roundStart,simulateFill,validateConfig} from './strategy.mjs';
 import {RoundHistory,HISTORY_COUNT} from './history.mjs';
+import {HISTORY_DISPLAY_COUNT} from '../src/history-summary.mjs';
 
 export const PREVIOUS_ENTRY_SECONDS=15;
 export const PREVIOUS_PRICE_CAP=0.7;
@@ -16,9 +17,9 @@ const fixedConfig=config=>({...config,entryDelay:0,entryWindow:PREVIOUS_ENTRY_SE
 export class PreviousDirectionEngine extends Engine{
   constructor(store,venue,{marketStore,previousMarketStore,mode='paper',...options}={}){
     super(store,venue,{...options,modes:[mode]});this.marketStore=marketStore;this.previousMarketStore=previousMarketStore;this.mode=mode;
-    this.history=new RoundHistory(venue,{now:this.now,store,lookback:HISTORY_COUNT+1});
+    this.history=new RoundHistory(venue,{now:this.now,store,lookback:Math.max(HISTORY_COUNT+1,HISTORY_DISPLAY_COUNT),displayCount:HISTORY_DISPLAY_COUNT});
     const account=store.account(mode),config=fixedConfig({...account.config,
-      maxPrice:mode==='live'||!account.config.followPreviousAtOpen?PREVIOUS_PRICE_CAP:account.config.maxPrice});
+      maxPrice:!account.config.followPreviousAtOpen?PREVIOUS_PRICE_CAP:account.config.maxPrice});
     if(Object.keys(config).some(key=>config[key]!==account.config[key]))store.saveAccount({...account,config});
   }
   configure(mode,input){
@@ -26,8 +27,8 @@ export class PreviousDirectionEngine extends Engine{
     const current=this.store.account(mode).config;
     const config=validateConfig(fixedConfig({...input,
       minPrice:Object.hasOwn(input,'minPrice')?input.minPrice:current.minPrice,
-      maxPrice:mode==='live'?PREVIOUS_PRICE_CAP:Object.hasOwn(input,'maxPrice')?input.maxPrice:current.maxPrice}));
-    if(mode==='paper'&&config.minPrice>config.maxPrice)throw Error('最低买入价不能高于最高买入价');
+      maxPrice:Object.hasOwn(input,'maxPrice')?input.maxPrice:current.maxPrice}));
+    if(config.minPrice>config.maxPrice)throw Error('最低买入价不能高于最高买入价');
     return super.configure(mode,config);
   }
   async start(mode){
@@ -43,7 +44,7 @@ export class PreviousDirectionEngine extends Engine{
   }
   stakeCycleLimitLabel(){return '单笔金额或加倍次数上限';}
   prefetchNextMarket(){
-    if(this.mode!=='paper'||this.closing||this.marketPrefetchTask||!this.store.account('paper').running)return;
+    if(this.closing||this.marketPrefetchTask||!this.store.account(this.mode).running)return;
     const now=this.now(),round=roundStart(now)+ROUND_SECONDS;
     if(round*1000-now>MARKET_PREFETCH_MS||this.prefetchedMarket?.round===round||
       (this.marketPrefetchRound===round&&now-this.marketPrefetchAt<2000))return;
@@ -54,12 +55,12 @@ export class PreviousDirectionEngine extends Engine{
       .finally(()=>{this.marketPrefetchTask=null;});
   }
   marketPollInterval(start){
-    return this.mode==='paper'&&!this.market?.active&&this.now()/1000-start<=PREVIOUS_ENTRY_SECONDS
+    return !this.market?.active&&this.now()/1000-start<=PREVIOUS_ENTRY_SECONDS
       ?1000:super.marketPollInterval(start);
   }
   async refreshMarketBooks(start,tasks){
     const cached=this.prefetchedMarket;
-    if(this.mode!=='paper'||this.market||cached?.round!==start)return super.refreshMarketBooks(start,tasks);
+    if(this.market||cached?.round!==start)return super.refreshMarketBooks(start,tasks);
     this.prefetchedMarket=null;
     this.lastMarketPoll=this.now();
     // Only the token IDs are reused. Request fresh books and market status after the bell.
@@ -126,8 +127,8 @@ export class PreviousDirectionEngine extends Engine{
   }
   entryDirection(_account,start){return this.signal(start).direction;}
   entryGuard(_account,start){const signal=this.signal(start);return signal.code?signal:null;}
-  quote(book,budget,config,schedule){return simulateFill(book,budget,this.mode==='paper'?config:{...config,maxPrice:PREVIOUS_PRICE_CAP},schedule,
-    {strictTicks:true,ignoreSlippage:true,minimumBestAsk:this.mode==='paper'?config.minPrice:null});}
+  quote(book,budget,config,schedule){return simulateFill(book,budget,config,schedule,
+    {strictTicks:true,ignoreSlippage:true,minimumBestAsk:config.minPrice});}
   orderSignalFields(_account,start){
     const s=this.signal(start);
     return {entryReason:s.message,signalRule:'previous_round_fixed_reverse',referencePrice:null,signalPrice:null};

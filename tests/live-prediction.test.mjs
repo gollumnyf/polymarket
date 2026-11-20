@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {liveOrderPrediction} from '../src/live-prediction.mjs';
+import {liveOrderPrediction,liveRoundPrediction} from '../src/live-prediction.mjs';
 
 const round=1800000000,now=(round+20)*1000;
 const order=Object.freeze({id:'current',round,end:round+300,status:'open',direction:'UP',conditionId:'c',oracleWindow:60,referencePrice:90});
@@ -47,4 +47,10 @@ test('ended or unconfirmed orders cannot use the current spot as their result',(
   const previous={...order,round:round-300,end:round};
   assert.equal(liveOrderPrediction(previous,context),null);
   assert.equal(liveOrderPrediction(previous,{...context,spot:{...spot,round:previous.round}}),null);
+});
+
+test('the current history marker can predict without an order and clears when the next round opens',()=>{
+  assert.equal(liveRoundPrediction(round,context).outcome,'UP');
+  assert.equal(liveRoundPrediction(round,{...context,spot:{...spot,price:99}}).outcome,'DOWN');
+  assert.equal(liveRoundPrediction(round+300,{...context,now:(round+300)*1000}),null);
 });

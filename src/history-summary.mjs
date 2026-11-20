@@ -1,4 +1,5 @@
 export const HISTORY_COUNT = 40;
+export const HISTORY_DISPLAY_COUNT = 41;
 
 // Count the same displayed market results as the dots, never trade PnL or forecasts.
 export function summarizeHistory(items) {

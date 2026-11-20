@@ -59,9 +59,9 @@ export function withHistoricalForecast(item,forecast) {
 // History is read independently of trading ticks. Completed rounds are cached;
 // failures cannot delay execution, change positions, or invent a final result.
 export class RoundHistory {
-  constructor(venue, { now = () => Date.now(), store = null, lookback = HISTORY_COUNT } = {}) {
+  constructor(venue, { now = () => Date.now(), store = null, lookback = HISTORY_COUNT,displayCount=HISTORY_COUNT } = {}) {
     this.venue = venue; this.now = now; this.cache = new Map();
-    this.store = store; this.lookback=lookback;
+    this.store = store; this.lookback=lookback;this.displayCount=displayCount;
     this.lastAttempt = 0; this.updatedAt = null; this.currentRound = null;
     this.inflight = null; this.error = null;
   }
@@ -81,8 +81,9 @@ export class RoundHistory {
       oracleWindow:reference.oracleWindow,source:tick.source,priceAt:tick.time}:null;
   }
   snapshot(entryDelay = DEFAULT_CONFIG.entryDelay,followPreviousAtOpen=false,reverseSignal=false) {
-    this.syncSaved(this.starts());
-    const items = this.starts().map(round => this.cache.get(round) || this.store?.historicalRound(round) || {
+    const starts=this.starts(this.displayCount);
+    this.syncSaved(starts);
+    const items = starts.map(round => this.cache.get(round) || this.store?.historicalRound(round) || {
       round, end: round + 300, slug: `btc-updown-5m-${round}`, result: null,
       status: 'loading', open: null, close: null, change: null, changePercent: null,
     });
