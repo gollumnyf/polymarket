@@ -487,7 +487,7 @@ export class Store {
     const tick=this.db.prepare("SELECT time,price FROM ticks WHERE source='polymarket' AND oracle_window=? AND time>=0 AND time<? AND typeof(price) IN ('real','integer') AND price>0 AND price<1e308 ORDER BY time DESC LIMIT 1").get(oracleWindow,(round+300)*1000);
     return tick?{...tick,source:tick.time>=(round+299)*1000?'polymarket_last_second':'polymarket_last_available'}:null;
   }
-  ticks(since = Date.now() - 7200000) { return this.db.prepare("SELECT time,price FROM ticks WHERE source='polymarket' AND time>=? ORDER BY time").all(since); }
+  ticks(since = Date.now() - 7200000, {withOracle=false}={}) { return this.db.prepare(`SELECT time,price${withOracle?',oracle_window AS oracleWindow':''} FROM ticks WHERE source='polymarket' AND time>=? ORDER BY time`).all(since); }
   firstOracleTick(round, targetSeconds = DEFAULT_CONFIG.entryDelay) {
     return this.db.prepare("SELECT time,price FROM ticks WHERE source='polymarket' AND time>=? AND time<=? ORDER BY time LIMIT 1")
       .get((round + targetSeconds) * 1000, (round + targetSeconds + EARLY_SIGNAL_TOLERANCE) * 1000) || null;

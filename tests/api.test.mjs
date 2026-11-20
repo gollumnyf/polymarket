@@ -323,7 +323,7 @@ test('history API returns saved results while the official backfill is still pen
 
 test('price SSE emits batches even while the execution engine sends no snapshots',async t=>{
   const {EventEmitter}=await import('node:events');
-  const {mergeChartPrices}=await import('../src/chart-prices.mjs');
+  const {mergeChartPrices,chartTimeWindow}=await import('../src/chart-prices.mjs');
   const store=new Store(':memory:'),priceFeed=new EventEmitter();
   const venue={priceFeed,readiness:()=>({enabled:false})};
   const engine=new Engine(store,venue);
@@ -331,13 +331,80 @@ test('price SSE emits batches even while the execution engine sends no snapshots
   await new Promise(resolve=>server.once('listening',resolve));
   const abort=new AbortController();
   t.after(()=>{abort.abort();server.closeAllConnections();server.close();store.close();});
-  const response=await fetch('http://127.0.0.1:'+server.address().port+'/api/events',{signal:abort.signal});
+  const response=await fetch('http://127.0.0.1:'+server.address().port+'/api/chart-events',{signal:abort.signal});
   const reader=response.body.pipeThrough(new TextDecoderStream()).getReader();
-  const first=await reader.read();assert.ok(first.value.startsWith('data: '));
   assert.equal(priceFeed.listenerCount('price'),1);
   const points=[{time:1000,price:101},{time:2000,price:102}];
   priceFeed.emit('price',points.at(-1),points);
   const packet=await reader.read();assert.equal(packet.value,'event: chart-prices\ndata: '+JSON.stringify(points)+'\n\n');
   assert.deepEqual(mergeChartPrices([{time:0,price:100},{time:1000,price:100}],points),[{time:0,price:100},...points]);
+  assert.deepEqual(chartTimeWindow(points,{start:0,now:1900,range:'round'}),{xmin:0,xmax:300000,visibleThrough:2000});
+  assert.equal(chartTimeWindow([{time:300000}],{start:0,now:299500,range:'round'}).visibleThrough,299999);
   abort.abort();
+});
+
+test('both dashboard routes replay identical shared chart history, target, range and live prices',async t=>{
+  const {EventEmitter}=await import('node:events');
+  const store=new Store(':memory:'),feed=new EventEmitter(),opening=new EventEmitter(),range=new EventEmitter();
+  const now=Date.now(),round=Math.floor(now/300000)*300;
+  opening.current=()=>({round,price:74000});
+  range.current=()=>({round,zone:{lower:73000,upper:75000,edgePercent:20}});
+  const paper=new Engine(store,{readiness:()=>({enabled:false})}),live=new Engine(store,{readiness:()=>({enabled:false})});
+  const seed={time:now-1000,price:74050,oracleWindow:60};
+  store.tick(seed.time,seed.price,'polymarket',seed.oracleWindow);
+  const server=createApp(paper,{previousEngine:paper,previousLiveEngine:live,chart:{feed,opening,range,store}}).listen(0,'127.0.0.1');
+  await new Promise(resolve=>server.once('listening',resolve));
+  const abort=new AbortController();
+  t.after(()=>{abort.abort();server.closeAllConnections();server.close();store.close();});
+  const subscribe=async path=>{
+    const response=await fetch('http://127.0.0.1:'+server.address().port+path,{signal:abort.signal});
+    assert.equal(response.status,200);
+    const reader=response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer='';
+    return async()=>{
+      while(!buffer.includes('\n\n')){
+        const {done,value}=await reader.read();assert.equal(done,false);buffer+=value;
+      }
+      const end=buffer.indexOf('\n\n'),frame=buffer.slice(0,end);buffer=buffer.slice(end+2);
+      const [,event,data]=/^event: (.+)\ndata: (.+)$/.exec(frame);
+      return [event,JSON.parse(data)];
+    };
+  };
+  const subscribers=await Promise.all(['/api/chart-events','/previous/api/chart-events','/previous-live/api/chart-events'].map(subscribe));
+  const point={time:now,price:74055};
+  feed.emit('price',{...point,oracleWindow:60},[point]);
+  const expected=[['chart-opening',opening.current()],['chart-range',range.current()],['chart-history',[seed]],['chart-prices',[{...point,oracleWindow:60}]]];
+  for(const next of subscribers)for(const packet of expected)assert.deepEqual(await next(),packet);
+});
+
+test('live page auto-connect defers during the entry window and never starts trading',async t=>{
+  const store=new Store(':memory:');
+  let authenticated=false,background=false;
+  const calls=[];
+  const venue={
+    readiness:()=>({enabled:true,configured:true,authenticated}),
+    refreshWallet:async options=>{calls.push(options);authenticated=true;return 0;},
+  };
+  const engine=new Engine(store,venue);
+  engine.canRunBackground=()=>background;
+  const server=createApp(engine,{allowedModes:['live']}).listen(0,'127.0.0.1');
+  await new Promise(resolve=>server.once('listening',resolve));
+  t.after(()=>{server.closeAllConnections();server.close();store.close();});
+  const origin='http://127.0.0.1:'+server.address().port;
+  const {controlToken}=await fetch(origin+'/api/state').then(r=>r.json());
+  const connect=(token=controlToken,automatic=true)=>fetch(origin+'/api/live/connect',{
+    method:'POST',headers:{Origin:origin,'Content-Type':'application/json','x-control-token':token},
+    body:JSON.stringify({automatic}),
+  });
+  assert.equal((await connect('bad')).status,403);
+  assert.equal((await connect()).status,202);
+  assert.deepEqual(calls,[]);
+  background=true;
+  assert.equal((await connect()).status,200);
+  assert.deepEqual(calls,[{allowChange:true,ifConfigured:true}]);
+  assert.equal((await connect()).status,200);
+  assert.equal(calls.length,1);
+  assert.equal((await connect(controlToken,false)).status,200);
+  assert.equal(calls.at(-1).ifConfigured,false);
+  assert.equal(store.account('live').running,false);
 });

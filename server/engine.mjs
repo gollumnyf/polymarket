@@ -39,7 +39,7 @@ export class Engine extends EventEmitter {
     }
     return { time: this.now(), round: roundStart(this.now()),
       previousRoundPrediction:this.store.roundPrediction(roundStart(this.now())-300),spot: this.spot, market: this.market,
-      books: this.books, errors: this.errors, ticks: this.store.ticks(), accounts, live: this.venue.readiness() };
+      books: this.books, errors: this.errors, ...(this.includeSnapshotTicks===false?{}:{ticks:this.store.ticks()}), accounts, live: this.venue.readiness() };
   }
   broadcast() {
     try{this.emit('update',this.snapshot());}

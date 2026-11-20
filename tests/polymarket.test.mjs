@@ -100,3 +100,30 @@ test('wallet refresh reloads changed config and reads again without recreating a
   assert.equal(venue.readiness().authenticated,false);
   assert.equal(venue.readiness().balance,null);
 });
+
+test('automatic connection skips missing or disabled wallet configuration without authenticating',async()=>{
+  let config={enabled:false,key:'test',wallet:'test'};
+  const venue=new Polymarket({loadWalletConfig:()=>config,
+    createWalletClient:async()=>assert.fail('missing config must not authenticate')});
+  assert.equal(await venue.refreshWallet({ifConfigured:true}),null);
+  config={enabled:true,key:'',wallet:'test'};
+  assert.equal(await venue.refreshWallet({ifConfigured:true}),null);
+});
+
+test('live reconciliation accepts confirmed CLOB status with or without prefix, but never MINED',async()=>{
+  const venue=new Polymarket();
+  const order={venueOrderId:'test-order',assetId:'asset',conditionId:'market',feeSchedule:{rate:0,exponent:1}};
+  const trade={id:'fill',takerOrderId:order.venueOrderId,side:'BUY',size:'11.113637',price:'0.44'};
+  let status='TRADE_STATUS_CONFIRMED';
+  venue.authenticate=async()=>({
+    listAccountTrades:()=>({firstPage:async()=>({items:[{...trade,status}]})}),
+  });
+  const result=await venue.reconcile(order);
+  assert.deepEqual(result.tradeIds,['fill']);
+  assert.ok(Math.abs(result.price-0.44)<1e-12);
+  assert.equal(result.shares,11.113637);
+  status='CONFIRMED';
+  assert.deepEqual(await venue.reconcile(order),result);
+  for(status of ['TRADE_STATUS_MINED','MINED','TRADE_STATUS_FAILED',null])
+    assert.equal(await venue.reconcile(order),null);
+});

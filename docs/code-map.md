@@ -6,7 +6,7 @@
 | --- | --- |
 | 模拟 / 实盘页面 | src/main.jsx、src/Sidebar.jsx；/previous 与 /previous-live |
 | 策略设置与说明 | src/StrategyControl.jsx、src/StrategySettings.jsx、src/PreviousStrategySummary.jsx |
-| K 线与市场历史 | src/PriceChart.jsx、src/HistoricalRounds.jsx、src/history-summary.mjs、src/live-prediction.mjs、src/chart-prices.mjs（价格事件去重合并） |
+| K 线与市场历史 | src/PriceChart.jsx、src/HistoricalRounds.jsx、src/history-summary.mjs、src/live-prediction.mjs、src/chart-prices.mjs（独立行情事件去重与绘图时间窗）、server/index.mjs（共享图表 SSE）、server/price-feed.mjs（共用 RTDS，独立读游标，按连接监测新鲜报价并重连）、server/chart-opening.mjs（官方 target）、server/chart-range.mjs（共享支撑压力及过渡区间） |
 | 交易记录、日志和报表 | src/HistoryPanel.jsx、src/ReportsPage.jsx、server/reports.mjs |
 | 本机 API、后台请求调度与退出 | server/index.mjs、scripts/service-control.mjs |
 | 固定反买、开盘预取与报价 | server/previous-direction-engine.mjs、server/engine.mjs、server/strategy.mjs |

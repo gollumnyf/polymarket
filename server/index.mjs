@@ -9,17 +9,20 @@ import {MomentumEngine} from './momentum.mjs';
 import {RangeEngine} from './range-engine.mjs';
 import {Engine} from './engine.mjs';
 import {LiveRedemption} from './redemption.mjs';
+import {ChartOpening} from './chart-opening.mjs';
+import {ChartRange} from './chart-range.mjs';
+import {PolymarketPriceFeed} from './price-feed.mjs';
 import {RangeStore} from './range-store.mjs';
 import {Store} from './store.mjs';
 import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
 import {tradingReport} from './reports.mjs';
 
-export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,previousLiveEngine=null,adaptiveObserver=null,allowedModes=['paper','live'],legacyRangeLiveRetired=false } = {}) {
+export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,previousLiveEngine=null,adaptiveObserver=null,allowedModes=['paper','live'],legacyRangeLiveRetired=false,chart=null } = {}) {
   const app = express();
   app.disable('x-powered-by');
-  if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,adaptiveObserver,allowedModes:['paper']}));
-  if(previousEngine)app.use('/previous',createApp(previousEngine,{history:previousEngine.history,onShutdown,allowedModes:['paper']}));
-  if(previousLiveEngine)app.use('/previous-live',createApp(previousLiveEngine,{history:previousLiveEngine.history,onShutdown,allowedModes:['live']}));
+  if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,adaptiveObserver,allowedModes:['paper'],chart}));
+  if(previousEngine)app.use('/previous',createApp(previousEngine,{history:previousEngine.history,onShutdown,allowedModes:['paper'],chart}));
+  if(previousLiveEngine)app.use('/previous-live',createApp(previousLiveEngine,{history:previousLiveEngine.history,onShutdown,allowedModes:['live'],chart}));
   app.use('/gam',(req,res)=>res.status(410).json({error:'GAM 均值方差模块已移除'}));
   app.use('/lead',(req,res)=>res.status(410).json({error:'行情领先与配对模块已移除'}));
   const token = randomBytes(32).toString('hex');
@@ -89,16 +92,49 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     const send = state => res.write(`data: ${JSON.stringify(state)}\n\n`);
     send(engine.snapshot());
     engine.on('update', send);
-    const feed=engine.venue.priceFeed;
-    const sendPrices=(latest,points=[latest])=>{
-      if(!res.writableEnded&&!res.destroyed&&!res.writableNeedDrain&&points.length)
-        res.write(`event: chart-prices\ndata: ${JSON.stringify(points.slice(-120))}\n\n`);
-    };
-    feed?.on?.('price',sendPrices);
-    const recent=feed?.recent?.(120);
-    if(recent?.length)sendPrices(recent.at(-1),recent);
     const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 15000);
-    req.on('close', () => { clearInterval(heartbeat); engine.off('update', send); feed?.off?.('price',sendPrices); });
+    req.on('close', () => { clearInterval(heartbeat); engine.off('update', send); });
+  });
+  app.get('/api/chart-events',(req,res)=>{
+    res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform',Connection:'keep-alive','X-Accel-Buffering':'no'});
+    res.flushHeaders();
+    const feed=chart?.feed??engine.venue.priceFeed,opening=chart?.opening,range=chart?.range;
+    let queued=[];
+    const pending=new Map();
+    const send=(latest,points=[latest])=>{
+      if(res.writableEnded||res.destroyed)return;
+      const window=latest?.oracleWindow;
+      queued=queued.concat(points.map(point=>window==null?point:{...point,oracleWindow:window})).slice(-120);
+      if(res.writableNeedDrain||!queued.length)return;
+      const data=queued;queued=[];
+      write('chart-prices',data);
+    };
+    const write=(event,data)=>res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    const sendState=(event,value)=>{
+      if(res.writableEnded||res.destroyed)return;
+      if(res.writableNeedDrain){pending.set(event,value);return;}
+      pending.delete(event);write(event,value);
+    };
+    const sendOpening=value=>sendState('chart-opening',value);
+    const sendRange=value=>sendState('chart-range',value);
+    const drain=()=>{
+      for(const [event,value] of pending){if(res.writableNeedDrain)return;sendState(event,value);}
+      send(null,[]);
+    };
+    opening?.on('opening',sendOpening);
+    const savedOpening=opening?.current();
+    if(savedOpening)sendOpening(savedOpening);
+    range?.on('range',sendRange);
+    if(range)sendRange(range.current());
+    res.on('drain',drain);
+    const recent=feed?.recent?.(2000).map(point=>({...point,oracleWindow:feed.spec?.seconds}));
+    const saved=chart?.store?.ticks(Date.now()-31*60000,{withOracle:true});
+    const seed=new Map();
+    for(const point of [...(saved??[]),...(recent??[])])seed.set(point.time,point);
+    if(seed.size)sendState('chart-history',[...seed.values()].sort((a,b)=>a.time-b.time).slice(-2000));
+    feed?.on?.('price',send);
+    const heartbeat=setInterval(()=>{if(!res.writableNeedDrain)res.write(': keep-alive\n\n');},15000);
+    req.on('close',()=>{clearInterval(heartbeat);feed?.off?.('price',send);opening?.off('opening',sendOpening);range?.off('range',sendRange);res.off('drain',drain);});
   });
   app.get('/api/:mode/entry-block/:round',(req,res,next)=>{
     try{
@@ -156,8 +192,18 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
       engine.broadcast();res.json({ok:true,cleared});
     }catch(error){next(error);}
   });
+  let walletConnectTask=null;
   app.post('/api/live/connect', async (req, res, next) => {
-    try { await engine.venue.refreshWallet({allowChange:!engine.store.account('live').running&&!engine.store.pending('live').length&&!engine.redemption?.task}); res.json({ ok: true }); } catch (e) { next(e); } finally { engine.broadcast(); }
+    const automatic=req.body?.automatic===true;
+    if(automatic&&engine.venue.readiness().authenticated)return res.json({ok:true});
+    if(automatic&&(engine.canRunBackground?.()===false||engine.closing))
+      return res.status(202).json({deferred:true});
+    if(!walletConnectTask){
+      const allowChange=!engine.store.account('live').running&&!engine.store.pending('live').length&&!engine.redemption?.task;
+      walletConnectTask=Promise.resolve().then(()=>engine.venue.refreshWallet({allowChange,ifConfigured:automatic}))
+        .finally(()=>{walletConnectTask=null;engine.broadcast();});
+    }
+    try { await walletConnectTask; res.json({ok:true}); } catch(error) { next(error); }
   });
   app.post('/api/live/reconcile', (req, res, next) => {
     try { engine.attachOrderId(req.body?.id, req.body?.venueOrderId); res.json({ ok: true }); } catch (e) { next(e); }
@@ -198,23 +244,26 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
 async function main() {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const store = new RangeStore(resolve(root, 'data/trading.sqlite'));
-  const archive=store.pending().length?new Engine(store,new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true}),{modes:[]}):null;
+  const priceFeed=new PolymarketPriceFeed();
+  const archive=store.pending().length?new Engine(store,new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true}),{modes:[]}):null;
   const rangeStore=new RangeStore(resolve(root,'data/range.sqlite'));
   rangeStore.seedFrom([store]);
-  const rangeVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
+  const rangeVenue=new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true});
   const rangeEngine=new RangeAdaptiveEngine(rangeStore,rangeVenue);
   // Retain market data for the chart and settle any archived positions without placing new orders.
   rangeEngine.modes=[];
   const previousStore=new Store(resolve(root,'data/previous-direction.sqlite'));
-  const previousVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
+  const previousVenue=new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true});
   const previousEngine=new PreviousDirectionEngine(previousStore,previousVenue,{marketStore:rangeStore});
-  previousEngine.chartRangeSource=rangeEngine;
   const previousLiveStore=new Store(resolve(root,'data/previous-direction-live.sqlite'));
-  const previousLiveVenue=new Polymarket({officialOpeningOnly:true,deferOpeningPrice:true});
+  const previousLiveVenue=new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true});
   const previousLiveEngine=new PreviousDirectionEngine(previousLiveStore,previousLiveVenue,{mode:'live',marketStore:rangeStore,previousMarketStore:previousStore});
-  previousLiveEngine.chartRangeSource=rangeEngine;
   previousLiveEngine.redemption=new LiveRedemption(previousLiveEngine);
   const tradingEngines=[previousLiveEngine,previousEngine];
+  let closing=false;
+  const chartOpening=new ChartOpening({onSpec:(spec,round)=>{if(!closing)priceFeed.connect(spec,round);}});
+  const chartRange=new ChartRange(rangeEngine,priceFeed);
+  for(const engine of tradingEngines)engine.includeSnapshotTicks=false;
   const backgroundEngines=[rangeEngine,...(archive?[archive]:[])];
   const engines=[...tradingEngines,...backgroundEngines];
   const canRunBackground=()=>!tradingEngines.some(engine=>engine.hasExecutionPriority());
@@ -222,7 +271,7 @@ async function main() {
     engine.canRunBackground=canRunBackground;
     if(engine.history)engine.history.canRefresh=canRunBackground;
   }
-  const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,allowedModes:[],legacyRangeLiveRetired:true});
+  const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,allowedModes:[],legacyRangeLiveRetired:true,chart:{feed:priceFeed,opening:chartOpening,range:chartRange,store:rangeStore}});
   app.get(['/','/paper','/momentum','/momentum/'],(_req,res)=>res.redirect('/previous'));
   app.use('/copy',(_req,res)=>res.status(410).json({error:'跟单观察盘已移除'}));
   app.get(['/live','/live/'],(_req,res)=>res.redirect('/previous-live'));
@@ -248,13 +297,30 @@ async function main() {
   server.on('error', error => { console.error(safeError(error)); process.exitCode = 1; });
   const tick=()=>{for(const current of canRunBackground()?engines:tradingEngines.filter(engine=>engine.hasExecutionPriority()))void current.tick().catch(error=>console.error(`本次策略检查异常，下次继续运行：${safeError(error)}`));};
   const timer = setInterval(tick, 1000);
+  const chartTimer=setInterval(()=>{
+    try{
+      if(chartOpening.listenerCount('opening')){
+        if(!chartOpening.current()){
+          const round=Math.floor(Date.now()/300000)*300;
+          for(const engine of [...tradingEngines,rangeEngine]){
+            const spot=engine.spot;
+            if(spot?.round===round&&spot.sourceId==='polymarket'&&spot.openingSource==='polymarket_official')
+              chartOpening.publish(round,spot.currentOpen);
+            if(chartOpening.current())break;
+          }
+          void chartOpening.poll();
+        }
+        if(priceFeed.spec)priceFeed.connect(priceFeed.spec,priceFeed.round);
+      }
+      chartRange.poll(canRunBackground());
+    }catch(error){console.error(safeError(error));}
+  },1000);
   const redemptionTimer=setInterval(()=>previousLiveEngine.redemption.tick(),2500);
   tick();
-  let closing = false;
   async function close() {
     if (closing) return; closing = true;for(const current of engines)current.closing=true;
-    clearInterval(timer);clearInterval(redemptionTimer);
-    archive?.venue.close();rangeVenue.close();previousVenue.close();previousLiveVenue.close();
+    clearInterval(timer);clearInterval(redemptionTimer);clearInterval(chartTimer);
+    priceFeed.close();
     for(const current of engines)for(const mode of current.modes)current.stop(mode);
     server.close(); server.closeAllConnections();
     if (vite) await vite.close();
@@ -262,6 +328,7 @@ async function main() {
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
     while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.displayBalanceTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.redemption?.task||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    priceFeed.close();
     store.close();previousStore.close();previousLiveStore.close();rangeStore.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);

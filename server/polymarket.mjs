@@ -92,8 +92,9 @@ export class Polymarket {
     }
     return this.authPromise;
   }
-  async refreshWallet({allowChange=true}={}){
+  async refreshWallet({allowChange=true,ifConfigured=false}={}){
     const next={relayerKey:'',relayerAddress:'',...this.loadWalletConfig()},current=this.walletConfig;
+    if(ifConfigured&&(!next.enabled||!next.key||!next.wallet))return null;
     if(Object.keys(current).some(key=>(next[key]??'')!==current[key])){
       if(!allowChange)throw Error('请先暂停实盘并处理待结订单，再切换钱包配置');
       if(this.authPromise)throw Error('账户正在连接，请稍后重试');
@@ -174,9 +175,8 @@ export class Polymarket {
       const spec = oracleSpec(market?.cryptoMarketConfig);
       const previousSpec = this.officialOpeningOnly?null:oracleSpec(previousMarket?.cryptoMarketConfig);
       if (previousSpec&&spec.topic !== previousSpec.topic) throw new Error('相邻场次结算口径变更，等待核对');
-      this.priceFeed.connect(spec);
       const [latest, previousOpen] = await Promise.all([
-        this.priceFeed.fresh(spec), this.officialOpeningOnly?
+        this.priceFeed.fresh(spec,start), this.officialOpeningOnly?
           Promise.resolve(Number(previous?.eventMetadata?.priceToBeat)>0?Number(previous.eventMetadata.priceToBeat):null):this.openingPrice(previous, start - 300, spec),
       ]);
       // Current-round opening is the trading reference. Keep streaming prices
@@ -195,7 +195,7 @@ export class Polymarket {
       }
     }
     const { spec, currentOpen, previousOpen, previousClose } = this.references;
-    const latest = await this.priceFeed.fresh(spec);
+    const latest = await this.priceFeed.fresh(spec,start);
     return { price: latest.price, previousOpen, currentOpen,conditionId:this.references.conditionId, previousStart: start - 300, round: start,
       previousClose, previousChange: previousClose == null || previousOpen==null ? null : money(previousClose - previousOpen),
       previousChangePercent: previousClose == null || previousOpen==null ? null : (previousClose - previousOpen) / previousOpen * 100,
@@ -220,7 +220,7 @@ export class Polymarket {
     if (!Number.isFinite(price) || price <= 0) throw new Error('Polymarket 尚未公布场次起始价');
     return price;
   }
-  drainPriceTicks() { return this.priceFeed.drain().map(point=>({...point,oracleWindow:this.priceFeed.spec?.seconds??null})); }
+  drainPriceTicks() { return this.priceFeed.drain(this).map(point=>({...point,oracleWindow:point.oracleWindow??this.priceFeed.spec?.seconds??null})); }
   latestOfficialPrices(){return {points:this.priceFeed.recent?.(2)||[],oracleWindow:this.priceFeed.spec?.seconds??null};}
   async roundPrices(order) {
     const slug=`btc-updown-5m-${order.round}`;
@@ -294,9 +294,8 @@ export class Polymarket {
         return { rejected: true, note: '官方确认该订单未成交' };
       return null;
     }
-    if (trades.some(t => !['CONFIRMED', 'MINED'].includes(t.status.toUpperCase()))) return null;
-    // MINED can still reorganize: only CONFIRMED permits strategy progression.
-    if (trades.some(t => t.status.toUpperCase() !== 'CONFIRMED')) return null;
+    // CLOB serves both legacy statuses and TRADE_STATUS_*; MINED is not final.
+    if(trades.some(t=>String(t.status??'').trim().toUpperCase().replace(/^TRADE_STATUS_/,'')!=='CONFIRMED'))return null;
     const shares = trades.reduce((n, t) => n + Number(t.size), 0);
     const notional = trades.reduce((n, t) => n + Number(t.size) * Number(t.price), 0);
     const fee = trades.reduce((n, t) => n + Number(t.size) * feePerShare(Number(t.price), order.feeSchedule), 0);

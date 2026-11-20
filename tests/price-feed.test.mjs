@@ -137,3 +137,68 @@ test('range strategy receives official live prices without waiting for a slow cu
   const first=await venue.spot();assert.equal(first.price,101);assert.equal(first.currentOpen,null);assert.equal(typeof release,'function');
   release();await venue.openingTask.promise;const next=await venue.spot();assert.equal(next.currentOpen,100);assert.equal(next.direction,'UP');
 });
+
+test('shared RTDS connects once and each venue independently drains ticks with their original oracle',async()=>{
+  const start=1800000000;
+  let now=start*1000+298000;
+  const sockets=[];
+  class Socket extends EventTarget {
+    readyState=1;
+    send(){}
+    close(){this.readyState=3;}
+  }
+  const feed=new PolymarketPriceFeed({now:()=>now,socketFactory:()=>{
+    const socket=new Socket();sockets.push(socket);return socket;
+  }});
+  const paper=new Polymarket({priceFeed:feed}),live=new Polymarket({priceFeed:feed});
+  const publish=(socket,oracle,time)=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({
+    topic:oracle.topic,payload:{symbol:'btc/usd',window_s:oracle.seconds,timestamp:time,value:74000},
+  })}));
+  feed.connect(spec,start);feed.connect(spec,start);
+  assert.equal(sockets.length,1);
+  const prior={time:now,price:74000,oracleWindow:60};
+  publish(sockets[0],spec,now);
+  assert.deepEqual(paper.drainPriceTicks(),[prior]);
+  assert.deepEqual(paper.drainPriceTicks(),[]);
+  now+=3000;
+  const next=oracleSpec({asset:'btc',twapEnabled:true,twapLookbackSeconds:30});
+  feed.connect(next,start+300);
+  await assert.rejects(feed.fresh(spec,start),/another round/);
+  await assert.rejects(feed.fresh(spec,start+300),/another round/);
+  assert.equal(sockets.length,2);
+  publish(sockets[1],next,prior.time);
+  publish(sockets[1],next,now);
+  const current={time:now,price:74000,oracleWindow:30};
+  assert.deepEqual(live.drainPriceTicks(),[prior,current]);
+  assert.deepEqual(paper.drainPriceTicks(),[current]);
+  assert.equal(feed.pointAt(prior.time),null);
+  feed.close();
+});
+
+test('stale cached ticks do not force repeated reconnections, and heartbeats cannot mask a silent quote stream',()=>{
+  let now=1800000000000;
+  const sockets=[];
+  class Socket extends EventTarget{
+    readyState=0;
+    close(){this.readyState=3;}
+  }
+  const feed=new PolymarketPriceFeed({now:()=>now,socketFactory:()=>{
+    const socket=new Socket();sockets.push(socket);return socket;
+  }});
+  const point=(socket,time)=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({
+    topic:spec.topic,payload:{symbol:'btc/usd',window_s:spec.seconds,timestamp:time,value:74000},
+  })}));
+  feed.connect(spec);point(sockets[0],now);
+  now+=16000;feed.connect(spec);
+  assert.equal(sockets.length,2);
+  now+=1000;feed.connect(spec);feed.connect(spec);
+  assert.equal(sockets.length,2);
+  point(sockets[1],now);
+  assert.equal(feed.latest.time,now);
+  now+=14000;
+  sockets[1].dispatchEvent(new MessageEvent('message',{data:'PONG'}));
+  feed.connect(spec);assert.equal(sockets.length,2);
+  now+=2000;
+  feed.connect(spec);assert.equal(sockets.length,3);
+  feed.close();
+});
