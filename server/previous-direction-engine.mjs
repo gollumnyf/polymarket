@@ -126,19 +126,11 @@ export class PreviousDirectionEngine extends Engine{
       }
       newer=older;
     }
-    // The display count is bounded; the pause cadence needs the actual streak parity.
-    if(atHead&&result.direction){
-      for(let i=HISTORY_COUNT+2;start-i*300>0;i++){
-        if(this.marketResult(start-i*300).direction!==result.direction)break;
-        sameStreak++;
-      }
-    }
-    const streak=result.direction?sameStreak+1:0;
     const stats={same,reverse,estimated,missing:HISTORY_COUNT-same-reverse,total:HISTORY_COUNT,rule:'reverse'};
     const comparison=`近 ${stats.total} 场：同向命中 ${same} / 反向命中 ${reverse}${estimated?`，含预计 ${estimated} 场`:''}${stats.missing?`，${stats.missing} 场不可比较`:''}`;
     if(result.source==='official_void')return {...result,stats,code:'PREVIOUS_ROUND_VOID',message:`${comparison}；上一场 #${result.round} 已官方判定作废，没有 UP/DOWN 方向，本场跳过`};
     if(!result.direction)return {...result,stats,code:'PREVIOUS_DIRECTION_MISSING',message:`${comparison}；上一场 #${result.round} 尚无官方结果或预计方向，等待这一场的数据`};
-    if(streak>0&&streak%2===0)return {...result,previousDirection:result.direction,direction:null,stats,code:'PREVIOUS_REVERSE_COOLDOWN',message:`${comparison}；已连续 ${streak} 场 ${result.direction}，本场跳过；下一场恢复反向买入检查，若趋势延续再跳过一场`};
+    if(sameStreak===1)return {...result,previousDirection:result.direction,direction:null,stats,code:'PREVIOUS_REVERSE_COOLDOWN',message:`${comparison}；刚形成连续两场 ${result.direction}，本场跳过；下一场恢复反向买入检查，同一段走势不再重复跳过`};
     const source={official:'官方最终结果',polymarket_event_metadata:'官方场次起止价预计',polymarket_crypto_price:'官方接口起止价预计',polymarket_last_second:'同源末秒价预计',polymarket_last_available:'同源收盘前最后可用价预计'}[result.source];
     const direction=inverse(result.direction);
     return {...result,previousDirection:result.direction,direction,stats,code:null,message:`${comparison}；固定买上一场反方向；上一场 #${result.round} ${source} ${result.direction}，本场买 ${direction}`};

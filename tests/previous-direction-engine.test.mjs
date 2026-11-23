@@ -40,10 +40,8 @@ test('previous-direction paper fills at open without a current BTC quote, uses o
   const first=store.orderForRound('paper',start);assert.equal(store.orderCount('paper'),1);
   assert.equal(first.direction,'UP');assert.equal(first.signalRule,'previous_round_fixed_reverse');assert.equal(first.budget,10);assert.equal(first.price,.7);assert.match(first.entryReason,/官方最终结果 DOWN/);
   market(start+300);predict(start,'DOWN');await engine.attempt('paper');
-  assert.equal(engine.entryBlocks.paper.code,'PREVIOUS_REVERSE_COOLDOWN');
-  market(start+600);predict(start+300,'DOWN');await engine.attempt('paper');
-  const second=store.orderForRound('paper',start+600);assert.equal(second.budget,20);assert.equal(second.direction,'UP');assert.match(second.entryReason,/接口起止价预计 DOWN/);
-  market(start+900);predict(start+600,'UP');await engine.attempt('paper');assert.equal(store.orderForRound('paper',start+900).budget,10);
+  const second=store.orderForRound('paper',start+300);assert.equal(second.budget,20);assert.equal(second.direction,'UP');assert.match(second.entryReason,/接口起止价预计 DOWN/);
+  market(start+600);predict(start+300,'UP');await engine.attempt('paper');assert.equal(store.orderForRound('paper',start+600).budget,10);
 });
 test('paper waits within the entry window for a best ask at or above the inclusive floor',async t=>{
   const {engine,store,market,official}=fixture(t);
@@ -80,13 +78,9 @@ test('paper resets the stake after a loss at the configured limit, even while se
   const a=store.account('paper');engine.configure('paper',{...a.config,maxDoublings:1,maxAmount:20});
   await engine.start('paper');await engine.attempt('paper');
   market(start+300);predict(start,'DOWN');await engine.attempt('paper');
-  assert.equal(engine.entryBlocks.paper.code,'PREVIOUS_REVERSE_COOLDOWN');
+  assert.equal(store.orderForRound('paper',start+300).budget,20);
   market(start+600);predict(start+300,'DOWN');await engine.attempt('paper');
-  assert.equal(store.orderForRound('paper',start+600).budget,20);
-  market(start+900);predict(start+600,'DOWN');await engine.attempt('paper');
-  assert.equal(engine.entryBlocks.paper.code,'PREVIOUS_REVERSE_COOLDOWN');
-  market(start+1200);predict(start+900,'DOWN');await engine.attempt('paper');
-  assert.equal(store.orderForRound('paper',start+1200).budget,10);
+  assert.equal(store.orderForRound('paper',start+600).budget,10);
   const limit={...a,config:{...a.config,maxDoublings:1},losses:1,pnl:-10};
   const settled=engine.accountAfterSettlement(limit,-20,false);
   assert.equal(settled.losses,0);assert.equal(settled.cycle,a.cycle+1);assert.equal(settled.pnl,-30);
@@ -118,12 +112,11 @@ test('live and paper both buy the opposite direction even with a five-round same
   official(start-41*300,null,'void');
   assert.equal(engine.signal().stats.same-engine.signal().stats.reverse,5);
   assert.equal(engine.signal().stats.rule,'reverse');
-  assert.equal(engine.signal().code,'PREVIOUS_REVERSE_COOLDOWN');
+  assert.equal(engine.signal().direction,'UP');
   assert.equal(paper.signal().stats.rule,'reverse');
-  assert.equal(engine.signal(start+300).direction,'UP');
-  assert.equal(paper.signal(start+300).direction,'UP');
+  assert.equal(paper.signal().direction,'UP');
 });
-for(const direction of ['UP','DOWN'])test('paper and live alternate skipping and buying during consecutive '+direction+' rounds',async t=>{
+for(const direction of ['UP','DOWN'])test('paper and live skip once per streak of consecutive '+direction+' rounds',async t=>{
   const {engine,store,market,official,predict}=fixture(t);
   const opposite=direction==='UP'?'DOWN':'UP';
   official(start-900,opposite);
@@ -141,8 +134,8 @@ for(const direction of ['UP','DOWN'])test('paper and live alternate skipping and
     if(step%2===0)predict(round-300,direction);else official(round-300,direction);
     market(round);
     for(const current of [engine,live]){
-      assert.equal(current.signal(round).code,step%2===0?'PREVIOUS_REVERSE_COOLDOWN':null);
-      assert.equal(current.signal(round).direction,step%2===0?null:opposite);
+      assert.equal(current.signal(round).code,null);
+      assert.equal(current.signal(round).direction,opposite);
     }
   }
   official(start+1500,opposite);
