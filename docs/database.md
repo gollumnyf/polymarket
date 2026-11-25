@@ -116,3 +116,26 @@ ORDER BY time;
 ### 下单原因（schema v10）
 
 orders.entry_reason 为独立 TEXT 字段。订单占用时保存当次策略说明、参考价、蓝色区域条件、开盘后秒数、马丁金额、盘口及成交限价。后续结算、隐藏、配置修改均不重写原因；CSV 使用 entryReason 导出。旧记录为空时，页面仅按该订单已有策略证据还原并标明历史依据，证据不足则明确提示未记录。连续反买只评估本场紧前 N 场；range_streak_events 是审计记录，不再用旧事件替代当前连续窗口。
+
+迁移 v12 新增 strategy_versions（版本编号、名称、规则、首次登记时间）和 orders.strategy_version 外键。新单下单占用时固化版本；旧单保留 NULL，只按已有 signal_rule、config_id 和下单依据分析。版本说明不可用同号覆盖。CSV 同时导出 strategyVersion 和 configId；可按 mode、strategy_version 分组比较已结算订单。
+
+共享图表回看窗口保存于 data/range.sqlite 的 chart_settings 单行表，level_lookback_minutes 默认 60、最短 15、按 5 分钟调整；middle_percent 保存中间蓝色区域占比，首次升级从旧图表边界比例换算，默认 60%，两项均不写入交易策略配置。
+
+三连亏跟随模拟使用独立 data/loss-follow.sqlite，当前订单登记 LF-002（失利后上一笔×2+5），旧 LF-001 保留；loss_follow_triggers 按本盘会话保存触发三场与检测时间，恢复跟随时结合本盘最新成交；首单前若来源官方结果推翻触发信号，则撤回触发。
+
+### 上场方向布林模拟
+
+`data/previous-bollinger.sqlite` 使用标准账户、参数、订单、日志及历史表，交易策略版本仍为 PR-001。首次建库只复制来源模拟盘当前资金参数，以配置初始余额新建独立暂停会话；不复制订单或实际资金。之后重启不再覆盖本盘参数和余额。
+
+`bollinger_settings` 为该库专用单行表（`id=1`），字段：`enabled` INTEGER 0/1；`period` INTEGER 2–200；`deviations` REAL 0.1–10；`interval_seconds` INTEGER 限15/30/60/300；`updated_at` Unix毫秒。默认1/20/2/60。独立表在 `BollingerStore` 创建，标准schema版本不变，既有数据库不受影响。图表参数不参与订单策略配置及入场判断。
+
+指标暖机优先通过只读SQL聚合共享 `data/range.sqlite.range_price_bars`，按预言机窗口隔离；覆盖最近指标周期加31分钟。缺失的已结束K线，后台从官方 crypto-price 接口读取末秒参考快照并写入布林库专用 `bollinger_history_prices`：联合主键 `(oracle_window,price_at)`，`price` REAL正数，`source` TEXT固定 `polymarket_crypto_price`，`observed_at` Unix毫秒。字段独立存储，不写入实时ticks、市场场次结果或交易预测；本地实采桶优先。配置变化后按新周期计算缺失，重启复用已保存参考价，不新增实时行情连接。
+
+### 上场方向（超出不下单）模拟
+
+`data/previous-level-limited.sqlite` 保存独立标准账户、交易参数版本、订单、日志、历史与LP-001策略版本。首次初始化以来源当前配置创建独立初始余额，后续不再复制或覆盖。标准schema版本保持不变，新增表由 `LevelLimitedStore` 创建：
+
+- `level_limit_settings`：单行 `id=1`；`level_lookback_minutes`（15–1440，5分钟倍数）、`middle_percent`（0–100，不含0，仅图表显示）、`level_lag_minutes`（0–1440，5分钟倍数，首次复制原窗口滞后）、`updated_at`。独立于共享图表及其他模拟盘配置。
+- `level_limit_order_signals`：`order_id` 主键及orders外键，`lower_price`、`upper_price`、`observed_price`、`price_at`、`oracle_window`、`levels_round`、`observed_at`。下单占用时同一事务保存区间与报价证据，结算和隐藏不重写；清空已结束订单时一并清理，去重占用仍保留。下单原因也记录确切价格和上下界。
+
+原始区间行情和官方起止价复用共享range库，不复制原盘交易。越界拦截写入本盘entry_diagnostics及运行日志，不创建亏损订单，不推进马丁轮次。

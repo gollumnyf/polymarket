@@ -9,7 +9,7 @@ export const RANGE_EDGE_FRACTION=RANGE_DEFAULTS.edgePercent/100;
 
 export function levelWindow(now,hours=LEVEL_LOOKBACK_HOURS,lagMinutes=RANGE_DEFAULTS.levelLagMinutes){
   const end=Math.floor(now/300000)*300000-lagMinutes*60000;
-  return {start:end-hours*3600000,end};
+  return {start:end-Math.round(hours*3600000),end};
 }
 
 function inspectBars(bars,start,end){
@@ -48,7 +48,7 @@ export function analyzeLevels(bars,config,now,officialRounds=[]){
   }
   const bodyHighs=[...new Set(candles.map(bar=>bar.high))].sort((a,b)=>b-a),bodyLows=[...new Set(candles.map(bar=>bar.low))].sort((a,b)=>a-b);
   const upper=bodyHighs[0]??null,lower=bodyLows[0]??null;
-  const result={start,end,lagMinutes,nextUpdateAt:Math.floor(now/300000)*300000+300000,timeframeMinutes:5,lookbackHours:config.levelLookbackHours,expected:config.levelLookbackHours*12,received:candles.length,validCandles:candles.filter(bar=>bar.complete).length,
+  const result={start,end,lagMinutes,nextUpdateAt:Math.floor(now/300000)*300000+300000,timeframeMinutes:5,lookbackHours:config.levelLookbackHours,expected:Math.round(config.levelLookbackHours*12),received:candles.length,validCandles:candles.filter(bar=>bar.complete).length,
     peak:bodyHighs[0]??null,secondaryPeak:bodyHighs[1]??null,valley:bodyLows[0]??null,secondaryValley:bodyLows[1]??null,
     maxGapMs:history.maxGapMs,officialCandles:candles.filter(bar=>bar.source==='polymarket_crypto_price').length,candles,lower,upper,actualLower:lower,actualUpper:upper,
     widthPercent:lower>0?(upper-lower)/((upper+lower)/2)*100:null,supportSource:'rolling_extremes',resistanceSource:'rolling_extremes',ready:false};

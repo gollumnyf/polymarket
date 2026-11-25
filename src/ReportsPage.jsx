@@ -2,12 +2,19 @@ import React,{useEffect,useMemo,useState} from 'react';
 import {CalendarDays,ChevronLeft,ChevronRight,RefreshCw,LoaderCircle,Info} from 'lucide-react';
 import Sidebar from './Sidebar.jsx';
 import {DAY_MS,dateKey,dateStart,recentDates,reportDates} from './report-dates.mjs';
+import {PAGE_BY_ID} from './pages.mjs';
 
 const money=value=>Number(value??0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const signed=value=>`${value<0?'−':'+'}${money(Math.abs(value??0))}`;
 const color=value=>value>0?'green':value<0?'red':'';
 const monthLabel=month=>`${Number(month.slice(0,4))} 年 ${Number(month.slice(5,7))} 月`;
 const periodKey=dates=>`${dates.startDate}:${dates.endDate}`;
+const paperReports=[
+  {id:'previous',title:PAGE_BY_ID.previous.title,endpoint:'/previous/api/paper/report'},
+  {id:'loss-follow',title:'三连亏跟随',endpoint:'/loss-follow/api/paper/report'},
+  {id:'bollinger',title:PAGE_BY_ID.bollinger.title,endpoint:'/bollinger/api/paper/report'},
+  {id:'level-limited',title:PAGE_BY_ID['level-limited'].title,endpoint:'/level-limited/api/paper/report'},
+];
 
 export function ReportCalendar({data,month,selected,onSelect}){
   const cells=useMemo(()=>{
@@ -27,8 +34,9 @@ function Metric({title,value,note,tone}){return <div className="report-metric"><
 
 export default function ReportsPage({live=false}){
   const title=live?'实盘报表':'模拟盘报表';
-  const marketTitle=live?'上场方向实盘':'上场方向模拟';
-  const endpoint=live?'/previous-live/api/live/report':'/previous/api/paper/report';
+  const [strategy,setStrategy]=useState('previous');
+  const report=live?{title:'上场方向实盘',endpoint:'/previous-live/api/live/report'}:paperReports.find(item=>item.id===strategy);
+  const marketTitle=report.title,endpoint=report.endpoint;
   const [dates,setDates]=useState(()=>recentDates()),[draft,setDraft]=useState(()=>recentDates());
   const [month,setMonth]=useState(()=>recentDates().endDate.slice(0,7)),[selected,setSelected]=useState(()=>recentDates().endDate);
   const [result,setResult]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState(''),[refresh,setRefresh]=useState(0),[validation,setValidation]=useState('');
@@ -47,6 +55,7 @@ export default function ReportsPage({live=false}){
   return <div className="app reports-app"><Sidebar active={live?'live-reports':'reports'}/><div className="main-shell">
     <header className="topbar"><div className="breadcrumb">交易工作台 <ChevronRight size={13}/><strong>{title}</strong></div><span className="report-timezone">上海时间 · UTC+8</span></header>
     <main className="reports-main"><section className="page-heading"><div><div className="eyebrow">{live?'LIVE':'PAPER'} TRADING REPORTS</div><h1>{title}</h1><p>按策略查看每日交易收支与表现。</p></div><button className="button secondary small" disabled={loading} onClick={()=>setRefresh(value=>value+1)}><RefreshCw size={15} className={loading?'report-spinning':''}/>刷新报表</button></section>
+      {!live&&<nav className="report-tabs" aria-label="模拟盘报表策略">{paperReports.map(item=><button key={item.id} type="button" className={strategy===item.id?'active':''} aria-pressed={strategy===item.id} aria-controls="report-content" onClick={()=>setStrategy(item.id)}>{item.title}</button>)}</nav>}
       <section id="report-content" aria-label={`${marketTitle}报表`} aria-busy={loading}>
         <form className="panel report-filter" onSubmit={event=>{event.preventDefault();apply(draft);}}><label>开始日期<input aria-label="报表开始日期" type="date" required value={draft.startDate} onChange={event=>setDraft({...draft,startDate:event.target.value})}/></label><span className="report-date-to">至</span><label>结束日期<input aria-label="报表结束日期" type="date" required value={draft.endDate} onChange={event=>setDraft({...draft,endDate:event.target.value})}/></label><button className="button primary small" type="submit">查询</button><div className="report-shortcuts">{[7,30,90].map(days=><button type="button" key={days} onClick={()=>apply(recentDates(days))}>近 {days} 天</button>)}</div></form>
         {validation&&<p className="report-error" role="alert">{validation}</p>}

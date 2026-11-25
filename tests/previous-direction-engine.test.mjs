@@ -38,7 +38,7 @@ test('previous-direction paper fills at open without a current BTC quote, uses o
   engine.errors.spot='Current BTC feed unavailable';
   await assert.rejects(engine.start('live'));await engine.start('paper');await engine.attempt('paper');await engine.attempt('paper');
   const first=store.orderForRound('paper',start);assert.equal(store.orderCount('paper'),1);
-  assert.equal(first.direction,'UP');assert.equal(first.signalRule,'previous_round_fixed_reverse');assert.equal(first.budget,10);assert.equal(first.price,.7);assert.match(first.entryReason,/官方最终结果 DOWN/);
+  assert.equal(first.strategyVersion,'PR-001');assert.equal(first.direction,'UP');assert.equal(first.signalRule,'previous_round_fixed_reverse');assert.equal(first.budget,10);assert.equal(first.price,.7);assert.match(first.entryReason,/官方最终结果 DOWN/);
   market(start+300);predict(start,'DOWN');await engine.attempt('paper');
   const second=store.orderForRound('paper',start+300);assert.equal(second.budget,20);assert.equal(second.direction,'UP');assert.match(second.entryReason,/接口起止价预计 DOWN/);
   market(start+600);predict(start+300,'UP');await engine.attempt('paper');assert.equal(store.orderForRound('paper',start+600).budget,10);

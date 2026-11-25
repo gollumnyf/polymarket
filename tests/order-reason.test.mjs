@@ -18,3 +18,22 @@ test('legacy trigger carryover is labeled rather than described as the immediate
   order.streakSignal.lastRound=1799999700;assert.match(orderReason(order),/触发区间紧邻本场/);
   assert.match(orderReason({}),/未保存完整下单原因/);
 });
+
+test('a strategy version is immutable after reservation and legacy orders remain unversioned',t=>{
+  const store=new Store(':memory:');t.after(()=>store.close());
+  const mode='paper',account=store.account(mode);
+  const order={id:'scoped',mode,round:1800000000,session:account.session,status:'open',direction:'UP'};
+  assert.equal(store.reserveOrder(order),true);
+  const v1={id:'test-v1',name:'Fixed',rules:'Skip once'};
+  const v2={id:'test-v2',name:'Fixed',rules:'Restart after two losses'};
+  assert.equal(store.registerStrategyVersion(v1),v1.id);
+  assert.equal(store.registerStrategyVersion(v1),v1.id);
+  assert.throws(()=>store.registerStrategyVersion({...v1,rules:v2.rules}));
+  store.registerStrategyVersion(v2);
+  assert.equal(store.reserveOrder({...order,id:'first',round:order.round+300,strategyVersion:v1.id}),true);
+  assert.equal(store.reserveOrder({...order,id:'second',round:order.round+600,strategyVersion:v2.id}),true);
+  store.saveOrder({id:'first',status:'won',strategyVersion:v2.id});
+  assert.equal(store.order('first').strategyVersion,v1.id);
+  assert.equal(store.order('second').strategyVersion,v2.id);
+  assert.equal(store.order('scoped').strategyVersion,null);
+});

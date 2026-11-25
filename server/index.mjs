@@ -15,14 +15,21 @@ import {PolymarketPriceFeed} from './price-feed.mjs';
 import {RangeStore} from './range-store.mjs';
 import {Store} from './store.mjs';
 import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
+import {LossFollowEngine} from './loss-follow-engine.mjs';
+import {BollingerStore,BollingerEngine} from './bollinger-engine.mjs';
+import {LevelLimitedStore,LevelLimitedEngine,independentLevelRange} from './level-limited-engine.mjs';
 import {tradingReport} from './reports.mjs';
+import {serveUiStream} from './ui-stream.mjs';
 
-export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,previousLiveEngine=null,adaptiveObserver=null,allowedModes=['paper','live'],legacyRangeLiveRetired=false,chart=null } = {}) {
+export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,previousLiveEngine=null,lossFollowEngine=null,bollingerEngine=null,levelLimitedEngine=null,adaptiveObserver=null,allowedModes=['paper','live'],legacyRangeLiveRetired=false,chart=null } = {}) {
   const app = express();
   app.disable('x-powered-by');
   if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,adaptiveObserver,allowedModes:['paper'],chart}));
   if(previousEngine)app.use('/previous',createApp(previousEngine,{history:previousEngine.history,onShutdown,allowedModes:['paper'],chart}));
   if(previousLiveEngine)app.use('/previous-live',createApp(previousLiveEngine,{history:previousLiveEngine.history,onShutdown,allowedModes:['live'],chart}));
+  if(lossFollowEngine)app.use('/loss-follow',createApp(lossFollowEngine,{history:lossFollowEngine.history,onShutdown,allowedModes:['paper'],chart}));
+  if(bollingerEngine)app.use('/bollinger',createApp(bollingerEngine,{history:bollingerEngine.history,onShutdown,allowedModes:['paper'],chart}));
+  if(levelLimitedEngine)app.use('/level-limited',createApp(levelLimitedEngine,{history:levelLimitedEngine.history,onShutdown,allowedModes:['paper'],chart:{...chart,range:levelLimitedEngine.levels}}));
   app.use('/gam',(req,res)=>res.status(410).json({error:'GAM 均值方差模块已移除'}));
   app.use('/lead',(req,res)=>res.status(410).json({error:'行情领先与配对模块已移除'}));
   const token = randomBytes(32).toString('hex');
@@ -60,7 +67,28 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     res.once('finish',()=>{setImmediate(()=>{Promise.resolve().then(onShutdown).catch(error=>console.error(safeError(error)));});});
     res.json({ok:true,instanceId:service.instanceId,message:'正在停止服务'});
   });
+  if(chart?.range?.configure){
+    app.get('/api/chart-settings',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(chart.range.settings());});
+    app.post('/api/chart-settings',(req,res,next)=>{
+      try{const settings=chart.range.configure(req.body);chart.range.poll(false);res.json(settings);}
+      catch(error){next(error);}
+    });
+  }
   app.get('/api/state', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.json({ ...engine.snapshot(), controlToken: token }); });
+  if(engine instanceof BollingerEngine){
+    app.post('/api/bollinger-settings',(req,res,next)=>{
+      try{res.json(engine.configureBollinger(req.body));}catch(error){next(error);}
+    });
+    app.get('/api/bollinger-history',(req,res,next)=>{
+      res.setHeader('Cache-Control','no-store');
+      if(engine.canRunBackground()===false)return res.status(202).json({pending:true});
+      try{
+        engine.bollingerRepair.marketStore=chart?.store??engine.marketStore;
+        res.json(engine.bollingerRepair.read(engine.store.bollingerSettings(),chart?.feed?.spec?.seconds??engine.spot?.windowSeconds??60));
+      }
+      catch(error){next(error);}
+    });
+  }
   for(const mode of allowedModes.length===1?allowedModes:[])app.get(`/api/${mode}/report`,(req,res,next)=>{
     try {res.setHeader('Cache-Control','no-store');res.json(tradingReport(engine.store,mode,{startDate:req.query.startDate,endDate:req.query.endDate}));}
     catch(error){next(error);}
@@ -88,53 +116,10 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     catch (error) { next(error); }
   });
   app.get('/api/events', (req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-    const send = state => res.write(`data: ${JSON.stringify(state)}\n\n`);
-    send(engine.snapshot());
-    engine.on('update', send);
-    const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 15000);
-    req.on('close', () => { clearInterval(heartbeat); engine.off('update', send); });
+    serveUiStream(req,res,engine,{chart,prices:req.query.chart==='1'});
   });
   app.get('/api/chart-events',(req,res)=>{
-    res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform',Connection:'keep-alive','X-Accel-Buffering':'no'});
-    res.flushHeaders();
-    const feed=chart?.feed??engine.venue.priceFeed,opening=chart?.opening,range=chart?.range;
-    let queued=[];
-    const pending=new Map();
-    const send=(latest,points=[latest])=>{
-      if(res.writableEnded||res.destroyed)return;
-      const window=latest?.oracleWindow;
-      queued=queued.concat(points.map(point=>window==null?point:{...point,oracleWindow:window})).slice(-120);
-      if(res.writableNeedDrain||!queued.length)return;
-      const data=queued;queued=[];
-      write('chart-prices',data);
-    };
-    const write=(event,data)=>res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    const sendState=(event,value)=>{
-      if(res.writableEnded||res.destroyed)return;
-      if(res.writableNeedDrain){pending.set(event,value);return;}
-      pending.delete(event);write(event,value);
-    };
-    const sendOpening=value=>sendState('chart-opening',value);
-    const sendRange=value=>sendState('chart-range',value);
-    const drain=()=>{
-      for(const [event,value] of pending){if(res.writableNeedDrain)return;sendState(event,value);}
-      send(null,[]);
-    };
-    opening?.on('opening',sendOpening);
-    const savedOpening=opening?.current();
-    if(savedOpening)sendOpening(savedOpening);
-    range?.on('range',sendRange);
-    if(range)sendRange(range.current());
-    res.on('drain',drain);
-    const recent=feed?.recent?.(2000).map(point=>({...point,oracleWindow:feed.spec?.seconds}));
-    const saved=chart?.store?.ticks(Date.now()-31*60000,{withOracle:true});
-    const seed=new Map();
-    for(const point of [...(saved??[]),...(recent??[])])seed.set(point.time,point);
-    if(seed.size)sendState('chart-history',[...seed.values()].sort((a,b)=>a.time-b.time).slice(-2000));
-    feed?.on?.('price',send);
-    const heartbeat=setInterval(()=>{if(!res.writableNeedDrain)res.write(': keep-alive\n\n');},15000);
-    req.on('close',()=>{clearInterval(heartbeat);feed?.off?.('price',send);opening?.off('opening',sendOpening);range?.off('range',sendRange);res.off('drain',drain);});
+    serveUiStream(req,res,engine,{chart,state:false});
   });
   app.get('/api/:mode/entry-block/:round',(req,res,next)=>{
     try{
@@ -166,7 +151,9 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
       if (typeof status !== 'string' || !['all','open','placing','confirming','uncertain','won','lost','void','rejected'].includes(status))
         throw new Error('无效交易状态');
       res.setHeader('Cache-Control','no-store');
-      res.json(engine.store.historyPage(req.params.mode,kind,{page,pageSize,status,anchor}));
+      const started=performance.now(),data=engine.store.historyPage(req.params.mode,kind,{page,pageSize,status,anchor});
+      res.setHeader('Server-Timing',`db;dur=${(performance.now()-started).toFixed(2)};desc="SQLite pagination"`);
+      res.json(data);
     } catch (error) { next(error); }
   });
   for(const kind of ['orders','logs'])app.post('/api/:mode/'+kind+'/visibility',(req,res,next)=>{
@@ -209,7 +196,7 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     try { engine.attachOrderId(req.body?.id, req.body?.venueOrderId); res.json({ ok: true }); } catch (e) { next(e); }
   });
   app.get('/api/:mode/export', (req, res) => {
-    const keys = ['id', 'isHide', 'entryReason', 'round', 'createdAt', 'settledAt', 'direction', 'budget', 'cost', 'price', 'shares', 'fee', 'feeEstimated', 'status', 'pnl', 'venueOrderId',
+    const keys = ['id', 'isHide', 'strategyVersion', 'configId', 'entryReason', 'round', 'createdAt', 'settledAt', 'direction', 'budget', 'cost', 'price', 'shares', 'fee', 'feeEstimated', 'status', 'pnl', 'venueOrderId',
       'predictionOutcome','predictionWon','predictionOpen','predictionClose','predictionAt','predictionMatches','predictionSource','predictionPriceAt'];
     if(engine instanceof MomentumEngine)keys.push('openingSource','oracleWindow','previousAt','previousPrice','latestAt','latestPrice');
     if(engine instanceof RangeEngine)keys.push('streakFirstRound','streakLastRound','streakRoundsRequired','streakMarketDirection','streakBuyDirection','streakObservedAt','resumeRounds','executionMaxPrice','boundaryPauseRound','boundaryConfirmCount','boundaryConfirmLastRound','boundaryConfirmLastClose','boundaryConfirmLastSource','boundaryConfirmLower','boundaryConfirmUpper','boundaryPauseSide','boundaryPausedAt','boundaryResumeSide','boundaryResumedAt','boundaryResumePrice','boundaryResumeThreshold','edgePercent','rp01Enabled','rp01ReleaseId','phase','lower','upper','upCount','downCount','windowStart','windowEnd','formedAt','breakoutSince','levelTimeframeMinutes','levelLookbackHours','levelLagMinutes','levelWindowStart','levelWindowEnd','supportSource','resistanceSource','directionRule','decisionUpCount','decisionDownCount','tiePreviousRound','tiePreviousDirection','tiePreviousSource','actualLower','actualUpper','lockedDirectionRule','lockedPreviousRound','lockedPreviousDirection','lockedPreviousSource','directionSelectedAt','tradeFromRound','formedFrom');
@@ -259,7 +246,20 @@ async function main() {
   const previousLiveVenue=new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true});
   const previousLiveEngine=new PreviousDirectionEngine(previousLiveStore,previousLiveVenue,{mode:'live',marketStore:rangeStore,previousMarketStore:previousStore});
   previousLiveEngine.redemption=new LiveRedemption(previousLiveEngine);
-  const tradingEngines=[previousLiveEngine,previousEngine];
+  const lossFollowStore=new Store(resolve(root,'data/loss-follow.sqlite'));
+  const lossFollowVenue=new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true});
+  const lossFollowEngine=new LossFollowEngine(lossFollowStore,lossFollowVenue,{source:previousEngine,marketStore:rangeStore});
+  const bollingerStore=new BollingerStore(resolve(root,'data/previous-bollinger.sqlite'),{sourceConfig:previousStore.account('paper').config});
+  const bollingerVenue=new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true});
+  const bollingerEngine=new BollingerEngine(bollingerStore,bollingerVenue,{marketStore:rangeStore,previousMarketStore:previousStore});
+  const levelLimitedStore=new LevelLimitedStore(resolve(root,'data/previous-level-limited.sqlite'),{
+    sourceConfig:previousStore.account('paper').config,chartSettings:rangeStore.chartSettings(),levelLagMinutes:rangeStore.rangeConfig().levelLagMinutes});
+  const limitedRange=independentLevelRange(levelLimitedStore,rangeStore,priceFeed);
+  const levelLimitedEngine=new LevelLimitedEngine(levelLimitedStore,new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true}),
+    {marketStore:rangeStore,previousMarketStore:previousStore,levels:limitedRange});
+  rangeEngine.extraLevelHistoryStart=()=>Math.floor(Date.now()/300000)*300-
+    (levelLimitedStore.chartSettings().levelLookbackMinutes+levelLimitedStore.levelLagMinutes())*60;
+  const tradingEngines=[previousLiveEngine,previousEngine,lossFollowEngine,bollingerEngine,levelLimitedEngine];
   let closing=false;
   const chartOpening=new ChartOpening({onSpec:(spec,round)=>{if(!closing)priceFeed.connect(spec,round);}});
   const chartRange=new ChartRange(rangeEngine,priceFeed);
@@ -271,7 +271,7 @@ async function main() {
     engine.canRunBackground=canRunBackground;
     if(engine.history)engine.history.canRefresh=canRunBackground;
   }
-  const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,allowedModes:[],legacyRangeLiveRetired:true,chart:{feed:priceFeed,opening:chartOpening,range:chartRange,store:rangeStore}});
+  const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,lossFollowEngine,bollingerEngine,levelLimitedEngine,allowedModes:[],legacyRangeLiveRetired:true,chart:{feed:priceFeed,opening:chartOpening,range:chartRange,store:rangeStore}});
   app.get(['/','/paper','/momentum','/momentum/'],(_req,res)=>res.redirect('/previous'));
   app.use('/copy',(_req,res)=>res.status(410).json({error:'跟单观察盘已移除'}));
   app.get(['/live','/live/'],(_req,res)=>res.redirect('/previous-live'));
@@ -313,6 +313,7 @@ async function main() {
         if(priceFeed.spec)priceFeed.connect(priceFeed.spec,priceFeed.round);
       }
       chartRange.poll(canRunBackground());
+      limitedRange.poll(canRunBackground());
     }catch(error){console.error(safeError(error));}
   },1000);
   const redemptionTimer=setInterval(()=>previousLiveEngine.redemption.tick(),2500);
@@ -327,9 +328,9 @@ async function main() {
     // Outstanding venue requests have a 10s deadline. Preserve reservations until
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
-    while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.displayBalanceTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.redemption?.task||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.displayBalanceTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.redemption?.task||current.bollingerRepair?.task||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
     priceFeed.close();
-    store.close();previousStore.close();previousLiveStore.close();rangeStore.close();process.exit(0);
+    store.close();previousStore.close();previousLiveStore.close();lossFollowStore.close();bollingerStore.close();levelLimitedStore.close();rangeStore.close();process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);
 }

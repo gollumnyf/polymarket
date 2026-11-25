@@ -32,7 +32,7 @@ export class Engine extends EventEmitter {
     for (const mode of ['paper', 'live']) {
       const account = this.store.account(mode);
       const pending=this.store.pending(mode), projected=this.projectAccount(account,pending), execution=this.executionAccount(projected);
-      accounts[mode] = { ...account, nextAmount: nextAmount(execution), stakeStep:execution.stakeLosses??projected.losses, stakeProtected:!!execution.stakeProtection, status: this.status[mode],
+      accounts[mode] = { ...account, nextAmount: this.nextAmount(execution), stakeStep:execution.stakeLosses??projected.losses, stakeProtected:!!execution.stakeProtection, status: this.status[mode],
         projectedLosses:projected.losses,projectedCycle:projected.cycle,projectedCount:projected.projectedCount,
         entryBlock: this.entryBlocks[mode] || null, activeOrders: pending,
         orderCount:this.store.orderCount(mode), historyVersion:this.store.historyVersion(mode) };
@@ -141,6 +141,8 @@ export class Engine extends EventEmitter {
     this.status[mode] = reason; this.log(mode, 'warning', reason);
   }
   resetStakeCycle(account){return resetAtAmountLimit(account);}
+  nextAmount(account){return nextAmount(account);}
+  riskReason(account,available){return riskReason(account,available,a=>this.nextAmount(a));}
   stakeCycleLimitLabel(){return '单笔上限';}
   projectAccount(account,pending){return projectedAccount(account,pending,a=>this.resetStakeCycle(a));}
   executionAccount(projected){return projected;}
@@ -150,7 +152,7 @@ export class Engine extends EventEmitter {
     const account=this.store.account(mode), normalized=this.resetStakeCycle(account);
     if(normalized!==account){
       this.store.saveAccount(normalized);
-      this.log(mode,'info',`下一笔 ${nextAmount(account).toFixed(2)} pUSD 超过${this.stakeCycleLimitLabel()}；恢复首笔 ${account.config.baseAmount.toFixed(2)} 开始新轮`);
+      this.log(mode,'info',`下一笔 ${this.nextAmount(account).toFixed(2)} pUSD 超过${this.stakeCycleLimitLabel()}；恢复首笔 ${account.config.baseAmount.toFixed(2)} 开始新轮`);
     }
     return normalized;
   }
@@ -166,7 +168,7 @@ export class Engine extends EventEmitter {
     }
     // Read state again after async authentication, so a settlement cannot be overwritten.
     account = this.store.account(mode);
-    const reason = riskReason(this.executionAccount(this.projectAccount(account,this.store.pending(mode))), available);
+    const reason = this.riskReason(this.executionAccount(this.projectAccount(account,this.store.pending(mode))), available);
     this.store.saveAccount({ ...account, running: true, reason: null });
     this.status[mode] = '等待入场信号'; this.log(mode, 'info', '策略启动；每场只买入一次；错误不自动暂停');
     const uncertain=this.store.pending(mode).find(order=>['uncertain','placing','confirming'].includes(order.status));
@@ -192,7 +194,7 @@ export class Engine extends EventEmitter {
   blockEntry(mode,round,message,details={},book=null) {
     const account=this.store.account(mode),at=this.now(),elapsed=(at-round*1000)/1000;
     const direction=details.direction??this.entryDirection(account,round)??null;
-    const budget=nextAmount(this.executionAccount(this.projectAccount(account,this.store.pending(mode))));
+    const budget=this.nextAmount(this.executionAccount(this.projectAccount(account,this.store.pending(mode))));
     const code=details.code||'ENTRY_BLOCKED';
     const fullMessage=`场次 #${round}，开盘后 ${elapsed.toFixed(3)} 秒${direction?`，准备买入 ${direction}`:''}：${message}`;
     const diagnostic=this.store.saveEntryDiagnostic({configId:account.configId,budget,elapsed,entryDelay:account.config.entryDelay,entryWindow:account.config.entryWindow,
@@ -288,10 +290,10 @@ export class Engine extends EventEmitter {
     if (updatedAlignment) {this.blockEntry(mode,start,updatedAlignment,{code:'SAME_DIRECTION_FILTER'});return;}
     if (updatedDirection !== direction) {this.blockEntry(mode,start,`入场信号已改变：钱包检查前 ${direction}，检查后 ${updatedDirection??'无有效方向'}，取消本次买入`,{code:'SIGNAL_CHANGED',direction:updatedDirection},book);return;}
     const tradeAccount=this.executionAccount(this.projectAccount(account,this.store.pending(mode)));
-    const reason = riskReason(tradeAccount, available);
+    const reason = this.riskReason(tradeAccount, available);
     if (reason) { this.blockEntry(mode,start,reason,{code:'RISK_LIMIT',availableBalance:available},book);return; }
     let quote;
-    try { quote = this.quote(book, nextAmount(tradeAccount), account.config, this.market.feeSchedule); }
+    try { quote = this.quote(book, this.nextAmount(tradeAccount), account.config, this.market.feeSchedule); }
     catch (e) {
       this.blockEntry(mode,start,safeError(e),{...e.evidence,code:e.code||'QUOTE_FAILED'},book); return;
     }
@@ -306,7 +308,7 @@ export class Engine extends EventEmitter {
     const outcome = this.market.outcomes.find(o => o.direction === direction);
     const order = { id: randomUUID(), mode, session: account.session, round: start, end: start + 300,
       slug: this.market.slug, conditionId: this.market.conditionId, assetId: outcome.assetId,
-      outcomeIndex: outcome.index, direction, budget: nextAmount(tradeAccount), doubling: tradeAccount.stakeLosses??tradeAccount.losses,
+      outcomeIndex: outcome.index, direction, budget: this.nextAmount(tradeAccount), doubling: tradeAccount.stakeLosses??tradeAccount.losses,
       status: 'placing', createdAt: this.now(), referencePrice: this.spot?.round===start?this.spot.currentOpen:null,
       signalRule: account.config.reverseSignal?'current_round_reverse':follow?'previous_round_prediction':'current_round_open',
       signalPrice:this.spot?.round===start?this.spot.price:null,priceSource:this.spot?.round===start?this.spot.source||null:null,

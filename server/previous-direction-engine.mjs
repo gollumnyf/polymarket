@@ -3,6 +3,7 @@ import {safeError} from './polymarket.mjs';
 import {ROUND_SECONDS,roundStart,simulateFill,validateConfig} from './strategy.mjs';
 import {RoundHistory,HISTORY_COUNT} from './history.mjs';
 import {HISTORY_DISPLAY_COUNT} from '../src/history-summary.mjs';
+import {ACTIVE_PREVIOUS_DIRECTION_VERSION} from './strategy-versions.mjs';
 
 export const PREVIOUS_ENTRY_SECONDS=15;
 export const PREVIOUS_PRICE_CAP=0.7;
@@ -18,6 +19,7 @@ export class PreviousDirectionEngine extends Engine{
   constructor(store,venue,{marketStore,previousMarketStore,mode='paper',...options}={}){
     super(store,venue,{...options,modes:[mode]});this.marketStore=marketStore;this.previousMarketStore=previousMarketStore;this.mode=mode;
     this.history=new RoundHistory(venue,{now:this.now,store,lookback:Math.max(HISTORY_COUNT+1,HISTORY_DISPLAY_COUNT),displayCount:HISTORY_DISPLAY_COUNT});
+    this.strategyVersion=store.registerStrategyVersion(ACTIVE_PREVIOUS_DIRECTION_VERSION);
     const account=store.account(mode),config=fixedConfig({...account.config,
       maxPrice:!account.config.followPreviousAtOpen?PREVIOUS_PRICE_CAP:account.config.maxPrice});
     if(Object.keys(config).some(key=>config[key]!==account.config[key]))store.saveAccount({...account,config});
@@ -141,9 +143,9 @@ export class PreviousDirectionEngine extends Engine{
     {strictTicks:true,ignoreSlippage:true,minimumBestAsk:config.minPrice});}
   orderSignalFields(_account,start){
     const s=this.signal(start);
-    return {entryReason:s.message,signalRule:'previous_round_fixed_reverse',referencePrice:null,signalPrice:null};
+    return {strategyVersion:this.strategyVersion,entryReason:s.message,signalRule:'previous_round_fixed_reverse',referencePrice:null,signalPrice:null};
   }
   snapshot(){
-    return {...super.snapshot(),strategy:'previous_round_fixed_reverse',entrySignal:this.signal(),redemption:this.redemption?.snapshot()};
+    return {...super.snapshot(),strategy:'previous_round_fixed_reverse',strategyVersion:this.strategyVersion,entrySignal:this.signal(),redemption:this.redemption?.snapshot()};
   }
 }

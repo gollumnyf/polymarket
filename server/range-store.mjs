@@ -11,6 +11,9 @@ export class RangeStore extends Store {
   constructor(path){
     super(path);
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS chart_settings(id INTEGER PRIMARY KEY CHECK(id=1),
+        level_lookback_minutes INTEGER NOT NULL CHECK(level_lookback_minutes BETWEEN 15 AND 1440 AND level_lookback_minutes%5=0));
+      INSERT OR IGNORE INTO chart_settings(id,level_lookback_minutes) VALUES (1,60);
       CREATE TABLE IF NOT EXISTS range_configs(id INTEGER PRIMARY KEY,lookback_hours INTEGER NOT NULL,max_width_percent REAL NOT NULL,min_round_trips INTEGER NOT NULL,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS range_regimes(id INTEGER PRIMARY KEY,config_id INTEGER NOT NULL REFERENCES range_configs(id),oracle_window INTEGER NOT NULL,
         phase TEXT NOT NULL CHECK(phase IN ('range','breakout_up','breakout_down')),lower_price REAL NOT NULL,upper_price REAL NOT NULL,direction TEXT CHECK(direction IN ('UP','DOWN')),
@@ -70,6 +73,14 @@ export class RangeStore extends Store {
       CREATE TABLE IF NOT EXISTS range_streak_order_signals(order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,config_id INTEGER NOT NULL REFERENCES range_configs(id),oracle_window INTEGER NOT NULL,rounds_required INTEGER NOT NULL,first_round INTEGER NOT NULL,last_round INTEGER NOT NULL,market_direction TEXT NOT NULL,direction TEXT NOT NULL,observed_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS range_streak_order_samples(order_id TEXT NOT NULL REFERENCES range_streak_order_signals(order_id) ON DELETE CASCADE,round INTEGER NOT NULL,outcome TEXT,source TEXT NOT NULL,open_price REAL,close_price REAL,PRIMARY KEY(order_id,round));
     `);
+    if(!this.db.prepare('PRAGMA table_info(chart_settings)').all().some(c=>c.name==='middle_percent')){
+      this.transaction(()=>{
+        this.db.exec('ALTER TABLE chart_settings ADD COLUMN middle_percent REAL NOT NULL DEFAULT 60 CHECK(middle_percent>0 AND middle_percent<=100)');
+        const {edgePercent}=this.rangeConfig();
+        if(Number.isFinite(edgePercent)&&edgePercent>=0&&edgePercent<50)
+          this.db.prepare('UPDATE chart_settings SET middle_percent=? WHERE id=1').run(Number((100-2*edgePercent).toFixed(10)));
+      });
+    }
     this.rangeReady=true;
     this.insertTick=this.db.prepare('INSERT OR IGNORE INTO ticks(source,time,price,oracle_window) VALUES (?,?,?,?)');
     this.upsertBar=this.db.prepare(`INSERT INTO range_price_bars VALUES (?,?,?,?,?,?,?,?,0,1) ON CONFLICT(oracle_window,bucket) DO UPDATE SET
@@ -80,6 +91,20 @@ export class RangeStore extends Store {
       first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at),samples=samples+1`);
   }
   freshAccount(mode,config=RANGE_TRADING_CONFIG){return super.freshAccount(mode,config);}
+  chartSettings(){
+    return this.db.prepare('SELECT level_lookback_minutes AS levelLookbackMinutes,middle_percent AS middlePercent FROM chart_settings WHERE id=1').get();
+  }
+  saveChartSettings(input){
+    const current=this.chartSettings();
+    const minutes=Object.hasOwn(input??{},'levelLookbackMinutes')?input.levelLookbackMinutes:current.levelLookbackMinutes;
+    const middle=Object.hasOwn(input??{},'middlePercent')?input.middlePercent:current.middlePercent;
+    if(!Number.isInteger(minutes)||minutes<15||minutes>1440||minutes%5!==0)
+      throw new Error('支撑 / 压力回看时间须为 15 至 1440 分钟，以 5 分钟为单位');
+    if(!Number.isFinite(middle)||middle<=0||middle>100)
+      throw new Error('中间蓝色区域占比必须大于 0%，且不超过 100%');
+    this.db.prepare('UPDATE chart_settings SET level_lookback_minutes=?,middle_percent=? WHERE id=1').run(minutes,middle);
+    return this.chartSettings();
+  }
   rangeConfig(){const row=this.db.prepare('SELECT c.id,c.streak_reverse_enabled AS streakReverseEnabled,c.streak_reverse_rounds AS streakReverseRounds,c.lookback_hours AS lookbackHours,c.level_lookback_hours AS levelLookbackHours,c.breakout_percent AS breakoutPercent,c.breakout_rounds AS breakoutRounds,c.level_lag_minutes AS levelLagMinutes,c.edge_percent AS edgePercent,c.resume_rounds AS resumeRounds,c.execution_max_price AS executionMaxPrice FROM range_configs c JOIN range_control s ON s.config_id=c.id WHERE s.id=1').get();return {...row,streakReverseEnabled:!!row.streakReverseEnabled};}
   saveRangeConfig(input){
     const config=validateRangeConfig(input),previous=this.rangeConfig();

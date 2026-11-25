@@ -8,8 +8,12 @@
 | 策略设置与说明 | src/StrategyControl.jsx、src/StrategySettings.jsx、src/PreviousStrategySummary.jsx |
 | K 线与市场历史 | src/PriceChart.jsx、src/HistoricalRounds.jsx、src/history-summary.mjs、src/live-prediction.mjs、src/chart-prices.mjs（独立行情事件去重与绘图时间窗）、server/index.mjs（共享图表 SSE）、server/price-feed.mjs（共用 RTDS，独立读游标，按连接监测新鲜报价并重连）、server/chart-opening.mjs（官方 target）、server/chart-range.mjs（共享支撑压力及过渡区间） |
 | 交易记录、日志和报表 | src/HistoryPanel.jsx、src/ReportsPage.jsx、server/reports.mjs |
+| 页面名称与唯一标识 | src/pages.mjs（固定ID与中文名称）、src/Sidebar.jsx（菜单英文副标题与data-page-id）；更名保留路由及账本 |
+| 页面连接与刷新性能 | server/ui-stream.mjs（独立状态/行情生产，共用SSE连接）、src/page-stream.mjs（隐藏页断开/可见重连）、src/coalesced-refresh.mjs（分页版本刷新合并）；[诊断说明](UI_PERFORMANCE.md) |
 | 本机 API、后台请求调度与退出 | server/index.mjs、scripts/service-control.mjs |
 | 固定反买、开盘预取与报价 | server/previous-direction-engine.mjs、server/engine.mjs、server/strategy.mjs |
+| 上场方向震荡区间内模拟 | /level-limited；server/level-limited-engine.mjs（独立配置、区间过滤和入场证据）、server/chart-range.mjs；[专用说明](LEVEL_LIMITED.md) |
+| 上场方向布林模拟 | /bollinger；server/bollinger-engine.mjs、server/bollinger-history.mjs（官方历史补数与缓存）、src/bollinger.mjs、src/BollingerChart.jsx、src/BollingerSettings.jsx；[专用说明](BOLLINGER.md) |
 | Polymarket 请求、链上兑换及行情 | server/polymarket.mjs、server/redemption.mjs、server/price-feed.mjs |
 | 市场历史与持久化 | server/history.mjs、server/store.mjs、server/schema.sql、[数据库文档](database.md) |
 

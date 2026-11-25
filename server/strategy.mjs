@@ -7,10 +7,10 @@ export const DEFAULT_CONFIG = Object.freeze({
 export const roundStart = (now = Date.now()) => Math.floor(now / 1000 / ROUND_SECONDS) * ROUND_SECONDS;
 export const money = value => Math.round((value + Number.EPSILON) * 1e6) / 1e6;
 export const nextAmount = account => money(account.config.baseAmount * 2 ** (account.stakeLosses??account.losses));
-export function resetAtAmountLimit(account) {
+export function resetAtAmountLimit(account,amountFor=nextAmount) {
   // The doubling-count limit remains an independent stop condition.
   if (account.losses > account.config.maxDoublings ||
-      account.config.baseAmount > account.config.maxAmount || nextAmount(account) <= account.config.maxAmount) return account;
+      account.config.baseAmount > account.config.maxAmount || amountFor(account) <= account.config.maxAmount) return account;
   return {...account,losses:0,cycle:account.cycle+1,cyclePnl:0};
 }
 export const signalDirection = (reference, current) => {
@@ -42,9 +42,9 @@ export function validateConfig(input) {
   return Object.fromEntries(Object.keys(DEFAULT_CONFIG).map(key => [key, config[key]]));
 }
 
-export function riskReason(account, available) {
-  account=resetAtAmountLimit(account);
-  const amount = nextAmount(account);
+export function riskReason(account, available,amountFor=nextAmount) {
+  account=resetAtAmountLimit(account,amountFor);
+  const amount = amountFor(account);
   if (account.losses > account.config.maxDoublings) return `达到最大加倍次数：当前连续失利 ${account.losses} 次 > 配置 ${account.config.maxDoublings} 次，本次暂不买入，策略持续检查`;
   if (amount > account.config.maxAmount) return `首笔金额超过单笔上限：下一笔 ${amount.toFixed(6)} pUSD > 上限 ${account.config.maxAmount.toFixed(6)} pUSD`;
   if ((account.riskPnl ?? account.pnl) - amount < -account.config.stopLoss) return `下一笔突破累计亏损上限：当前风控盈亏 ${(account.riskPnl??account.pnl).toFixed(6)} pUSD，下一笔 ${amount.toFixed(6)} pUSD，扣除后 ${((account.riskPnl??account.pnl)-amount).toFixed(6)} pUSD < 止损线 ${(-account.config.stopLoss).toFixed(6)} pUSD，本次暂不买入，策略持续检查`;

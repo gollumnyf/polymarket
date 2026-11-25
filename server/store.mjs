@@ -12,7 +12,7 @@ const CONFIG = { baseAmount:'base_amount', initialBalance:'initial_balance', max
   entryWindow:'entry_window', slippage:'slippage', maxPrice:'max_price', minPrice:'min_price', sameDirectionOnly:'same_direction_only',followPreviousAtOpen:'follow_previous_at_open',reverseSignal:'reverse_signal' };
 const SESSION = { balance:'balance', startingBalance:'starting_balance', pnl:'pnl', cyclePnl:'cycle_pnl',
   losses:'losses', wins:'wins', settled:'settled', cycle:'cycle', createdAt:'created_at' };
-const ORDER = { id:'id', mode:'mode', round:'round', session:'session', configId:'config_id', status:'status',
+const ORDER = { id:'id', mode:'mode', round:'round', session:'session', configId:'config_id', strategyVersion:'strategy_version', status:'status',
   end:'end', slug:'slug', conditionId:'condition_id', assetId:'asset_id', outcomeIndex:'outcome_index',
   direction:'direction', budget:'budget', doubling:'doubling', createdAt:'created_at', settledAt:'settled_at',
   referencePrice:'reference_price', signalPrice:'signal_price', signalRule:'signal_rule', priceSource:'price_source',
@@ -62,12 +62,19 @@ export class Store {
   migrate(path) {
     const table=this.db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get();
     const version=table?this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version:0;
-    if(version>11)throw new Error('数据库版本高于当前程序，禁止降级打开');
-    if(version===11)return;
+    if(version>12)throw new Error('数据库版本高于当前程序，禁止降级打开');
+    if(version===12)return;
     if(version<10)this.migrateEntryReason(path);
     this.transaction(()=>{
-      this.ensureConfigColumns();
-      this.db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES (11,?)').run(Date.now());
+      if(version<11){
+        this.ensureConfigColumns();
+        this.db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES (11,?)').run(Date.now());
+      }
+      this.db.exec(schema);
+      if(!this.db.prepare('PRAGMA table_info(orders)').all().some(c=>c.name==='strategy_version'))
+        this.db.exec('ALTER TABLE orders ADD COLUMN strategy_version TEXT REFERENCES strategy_versions(id)');
+      this.db.exec('CREATE INDEX IF NOT EXISTS orders_strategy_version ON orders(mode,strategy_version,round)');
+      this.db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES (12,?)').run(Date.now());
     });
   }
   migrateEntryReason(path) {
@@ -289,6 +296,12 @@ export class Store {
       return { ...account, configId };
     });
   }
+  registerStrategyVersion({id,name,rules}) {
+    this.write('strategy_versions',{id,name,rules,registered_at:Date.now()},['id'],false);
+    const saved=this.db.prepare('SELECT name,rules FROM strategy_versions WHERE id=?').get(id);
+    if(saved.name!==name||saved.rules!==rules)throw new Error('策略版本内容不能覆盖，请使用新的版本号：'+id);
+    return id;
+  }
   readOrder(row) {
     if (!row) return null;
     return { ...decode(row, ORDER), isHide:Boolean(row.is_hide), prediction:this.prediction(row.id), feeSchedule:row.fee_rate == null && row.fee_exponent == null ? null
@@ -377,7 +390,7 @@ export class Store {
     return this.transaction(() => {
       const previous = this.order(order.id);
       if (!previous) throw new Error('订单不存在，无法更新');
-      const next = { ...previous, ...order,entryReason:previous.entryReason };
+      const next = { ...previous, ...order,entryReason:previous.entryReason, configId:previous.configId, strategyVersion:previous.strategyVersion };
       const row = this.orderRow(next);
       const columns = Object.keys(row).filter(k => k !== 'id');
       this.db.prepare(`UPDATE orders SET ${columns.map(c => `${c}=?`).join(',')} WHERE id=?`)
@@ -394,6 +407,11 @@ export class Store {
       ${mode ? 'AND mode=?' : ''} ORDER BY round`).all(...(mode ? [mode] : [])).map(r => this.readOrder(r));
   }
   orders(mode, limit = 200) { return this.db.prepare('SELECT * FROM orders WHERE mode=? ORDER BY round DESC LIMIT ?').all(mode, limit).map(r => this.readOrder(r)); }
+  recentFilledOrders(mode,session,limit,{ignoreVoid=false,beforeRound=Number.MAX_SAFE_INTEGER}={}){
+    return this.db.prepare(`SELECT * FROM orders WHERE mode=? AND session=? AND round<? AND shares>0
+      AND status IN ('open','won','lost','void') ${ignoreVoid?"AND status<>'void'":''}
+      ORDER BY round DESC LIMIT ?`).all(mode,session,beforeRound,limit).map(row=>this.readOrder(row));
+  }
   orderCount(mode) { return this.db.prepare('SELECT COUNT(*) AS total FROM orders WHERE mode=?').get(mode).total; }
   historyVersion(mode) {
     return Object.fromEntries(Object.entries(this.historyVersions[mode]).map(([key,value]) => [key,`${this.historyEpoch}:${value}`]));

@@ -30,6 +30,7 @@ export default function HistoricalRounds({ round, mode = 'paper', entryDelay = 5
     const load = async () => {
       let nextDelay=15000;
       try {
+        if(document.hidden)return;
         const response = await fetch(apiPath(`history?mode=${mode}`), { cache: 'no-store', signal: controller.signal });
         if (!response.ok) throw new Error('历史结果暂不可用');
         const data = await response.json();

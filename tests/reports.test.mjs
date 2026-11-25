@@ -45,10 +45,10 @@ test('empty days are included and forecasts never become realized income',t=>{
 });
 
 test('live reports isolate real orders per strategy while paper reports reject malformed ranges',async t=>{
-  const stores=Array.from({length:3},()=>new Store(':memory:'));const engines=stores.map(store=>Object.assign(new EventEmitter(),{store,venue:{}}));
+  const stores=Array.from({length:4},()=>new Store(':memory:'));const engines=stores.map(store=>Object.assign(new EventEmitter(),{store,venue:{}}));
   stores.forEach((store,i)=>store.reserveOrder({id:'r'+i,mode:'paper',session:store.account('paper').session,round:1800000000,status:'won',createdAt:dateStart('2026-11-01'),settledAt:dateStart('2026-11-01')+1000,cost:10,fee:i,payout:20+i,pnl:10+i}));
   for(const i of [0,1])stores[i].reserveOrder({id:'live'+i,mode:'live',session:stores[i].account('live').session,round:1800000000,status:'won',createdAt:dateStart('2026-11-01'),settledAt:dateStart('2026-11-01')+1000,cost:50,fee:1,payout:70+i,pnl:20+i});
-  const app=createApp(engines[0],{rangeEngine:engines[2],previousLiveEngine:engines[1],allowedModes:['live']});const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+  const app=createApp(engines[0],{rangeEngine:engines[2],previousEngine:engines[0],previousLiveEngine:engines[1],lossFollowEngine:engines[3],allowedModes:['live']});const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));stores.forEach(store=>store.close());});
   const base='http://127.0.0.1:'+server.address().port;
   const response=await fetch(base+'/range/api/paper/report?startDate=2026-11-01&endDate=2026-11-01');assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
@@ -61,6 +61,12 @@ test('live reports isolate real orders per strategy while paper reports reject m
     const report=await r.json();assert.equal(report.summary.orderCount,1);assert.equal(report.summary.netPnl,pnl);
   }
   assert.equal((await fetch(base+'/previous-live/api/paper/report')).status,400);
+  for(const [path,pnl] of [['/previous/api/paper/report',10],['/loss-follow/api/paper/report',13]]){
+    const r=await fetch(base+path+'?startDate=2026-11-01&endDate=2026-11-01');assert.equal(r.status,200);
+    const report=await r.json();assert.equal(report.summary.orderCount,1);assert.equal(report.summary.netPnl,pnl);
+    assert.equal(report.timezone,'Asia/Shanghai');assert.equal(report.days.length,1);
+  }
+  assert.equal((await fetch(base+'/loss-follow/api/live/report')).status,400);
   assert.equal((await fetch(base+'/momentum/api/state')).status,404);
   assert.equal((await fetch(base+'/momentum/api/paper/orders')).status,404);
 });

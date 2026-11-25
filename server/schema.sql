@@ -27,10 +27,14 @@ CREATE TABLE IF NOT EXISTS account_sessions (
   losses INTEGER NOT NULL, wins INTEGER NOT NULL, settled INTEGER NOT NULL,
   cycle INTEGER NOT NULL, created_at INTEGER NOT NULL, closed_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS strategy_versions (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, rules TEXT NOT NULL, registered_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY, mode TEXT NOT NULL REFERENCES accounts(mode),
   round INTEGER NOT NULL, session TEXT NOT NULL,
   config_id INTEGER REFERENCES strategy_configs(id),
+  strategy_version TEXT REFERENCES strategy_versions(id),
   status TEXT NOT NULL, end INTEGER, slug TEXT, condition_id TEXT, asset_id TEXT,
   outcome_index INTEGER, direction TEXT CHECK(direction IN ('UP','DOWN')),
   budget REAL, doubling INTEGER, created_at INTEGER, settled_at INTEGER,
