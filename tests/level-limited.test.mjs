@@ -134,3 +134,39 @@ test('paused chart work defers during opening protection while active entry can 
   await f.engine.start('paper');await f.engine.attempt('paper');
   assert.equal(f.store.orderCount('paper'),1);
 });
+
+test('opening oracle activation is an entry dependency even without charts or background spot refresh',async t=>{
+  const f=fixture(t);f.feed.round=start-300;f.engine.canRunBackground=()=>false;
+  f.engine.spot={round:start-300,windowSeconds:60,price:100,at:(start-1)*1000};
+  f.engine.pollSpot=()=>assert.fail('display spot must stay deferred');
+  f.engine.pollPredictions=()=>assert.fail('old forecasts must stay deferred');
+  f.engine.history.poll=()=>assert.fail('history must stay deferred');
+  let release,oracleCalls=0,markets=0;
+  f.venue.preparePriceFeed=async(round,isCurrent)=>{
+    oracleCalls++;assert.equal(round,start);await new Promise(resolve=>{release=resolve;});
+    if(isCurrent())f.feed.round=round;return f.feed.spec;
+  };
+  f.venue.market=async()=>{markets++;return f.engine.market;};f.venue.books=async()=>f.engine.books;
+  await f.engine.start('paper');const tick=f.engine.tick();await Promise.resolve();
+  assert.equal(oracleCalls,1);assert.equal(markets,1);assert.equal(f.store.orderCount('paper'),0);
+  release();await tick;
+  const order=f.store.orderForRound('paper',start);
+  assert.equal(f.store.orderCount('paper'),1);assert.equal(order.direction,'DOWN');
+  assert.equal(order.createdAt,start*1000+1000);assert.equal(order.oracleWindow,60);
+  assert.equal(f.engine.spot.round,start-300);
+  await f.engine.tick();assert.equal(oracleCalls,1);assert.equal(f.store.orderCount('paper'),1);
+});
+
+test('oracle lookup failure records the exact cause, and retry still enforces the interval',async t=>{
+  const f=fixture(t);f.feed.round=start-300;f.engine.canRunBackground=()=>false;
+  f.venue.market=async()=>f.engine.market;f.venue.books=async()=>f.engine.books;
+  f.venue.preparePriceFeed=async()=>{throw Error('Gamma oracle TIMEOUT');};
+  await f.engine.start('paper');await f.engine.tick();
+  assert.equal(f.store.orderCount('paper'),0);assert.equal(f.engine.busy,false);
+  assert.equal(f.store.entryBlock('paper',start).code,'LEVEL_PRICE_ROUND_MISSING');
+  assert.match(f.store.entryBlock('paper',start).message,/Gamma oracle TIMEOUT/);
+  f.venue.preparePriceFeed=async round=>{f.feed.round=round;return f.feed.spec;};
+  f.setPrice(111);await f.engine.tick();assert.equal(f.store.orderCount('paper'),0);
+  assert.equal(f.store.entryBlock('paper',start).code,'ABOVE_RESISTANCE');
+  f.setPrice(100);await f.engine.tick();assert.equal(f.store.orderCount('paper'),1);
+});

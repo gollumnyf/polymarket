@@ -51,3 +51,17 @@ test('market boundary is checked again before the relayer request',async t=>{
   assert.equal(worker.snapshot().counts.waiting,1);
   assert.deepEqual(calls,[]);
 });
+
+test('two real ledgers sharing a wallet reuse the same redemption transaction',async t=>{
+  const a=fixture(t),b=fixture(t);
+  a.worker.peer=b.worker;b.worker.peer=a.worker;
+  a.worker.tick();b.worker.tick();
+  await Promise.all([a.worker.task,b.worker.task]);
+  assert.equal([...a.calls,...b.calls].filter(call=>call==='submit').length,1);
+  a.time(106000);b.time(106000);
+  a.worker.tick();b.worker.tick();
+  await Promise.all([a.worker.task,b.worker.task]);
+  assert.equal(a.worker.snapshot().counts.confirmed,1);
+  assert.equal(b.worker.snapshot().counts.confirmed,1);
+  assert.equal([...a.calls,...b.calls].filter(call=>call==='submit').length,1);
+});

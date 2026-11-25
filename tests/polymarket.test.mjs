@@ -1,6 +1,66 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Polymarket, normalizeMarket } from '../server/polymarket.mjs';
+import { Polymarket, normalizeMarket, safeError } from '../server/polymarket.mjs';
+
+test('critical public queries expose their endpoint and network cause without hidden SDK retries',async()=>{
+  let calls=0;
+  const venue=new Polymarket({fetchImpl:async()=>{calls++;throw new TypeError('fetch failed',
+    {cause:Object.assign(Error('reset'),{code:'ECONNRESET'})});}});
+  await assert.rejects(venue.market(1800000000),error=>{
+    assert.match(error.message,/Gamma.*1800000000/);assert.match(error.message,/ECONNRESET/);return true;
+  });
+  assert.equal(calls,1);
+  await assert.rejects(venue.market(1800000000));assert.equal(calls,2);
+});
+
+test('concurrent market and book reads share only matching in-flight public data, with independent results',async()=>{
+  const feed={},fetchImpl=async()=>{},a=new Polymarket({priceFeed:feed,fetchImpl}),b=new Polymarket({priceFeed:feed,fetchImpl});
+  const raw={id:'1',slug:'btc-updown-5m-1800000000',conditionId:'c',version:'v1',
+    state:{active:true,closed:false,acceptingOrders:true},trading:{feesEnabled:false},
+    outcomes:{yes:{label:'UP',tokenId:'u'},no:{label:'DOWN',tokenId:'d'}}};
+  let release,calls=0;
+  const load=(_params,options)=>{calls++;assert.equal(options.retries,0);assert.equal(options.timeout,2500);
+    assert.ok(options.signal instanceof AbortSignal);return new Promise(resolve=>{release=()=>resolve(raw);});};
+  a.public={fetchMarket:load};b.public={fetchMarket:load};
+  const p=a.market(1800000000),q=b.market(1800000000);await Promise.resolve();
+  assert.equal(calls,1);release();const [ma,mb]=await Promise.all([p,q]);
+  ma.outcomes[0].assetId='mutated';assert.equal(mb.outcomes[0].assetId,'u');
+  const next=a.market(1800000000);await Promise.resolve();assert.equal(calls,2);release();await next;
+  let books=0,finish;
+  const loadBooks=(_params,options)=>{books++;assert.equal(options.retries,0);
+    return new Promise(resolve=>{finish=()=>resolve([{assetId:'u',asks:[{price:'.5',size:'10'}],bids:[]},{assetId:'d',asks:[],bids:[]}]);});};
+  a.public.fetchOrderBooks=loadBooks;b.public.fetchOrderBooks=loadBooks;
+  const x=a.books(mb),y=b.books(mb);await Promise.resolve();assert.equal(books,1);finish();
+  const [ba,bb]=await Promise.all([x,y]);ba.UP.asks[0].size='0';assert.equal(bb.UP.asks[0].size,'10');
+  const other={...mb,round:mb.round+300};
+  const z=a.books(other);await Promise.resolve();assert.equal(books,2);finish();await z;
+});
+
+test('a stalled public request times out and releases the next scheduler retry',async()=>{
+  const venue=new Polymarket();let calls=0;
+  venue.public={fetchMarket:async(_params,options)=>{
+    calls++;await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));
+  }};
+  await assert.rejects(venue.market(1800000000),/Gamma.*TIMEOUT/);
+  assert.equal(calls,1);
+  venue.public.fetchMarket=async()=>{throw Object.assign(Error('dns'),{code:'ENOTFOUND'});};
+  await assert.rejects(venue.market(1800000000),/ENOTFOUND/);
+  const cycle=Object.assign(Error('fetch failed'),{code:'UND_ERR_SOCKET'});cycle.cause=cycle;
+  assert.match(safeError(cycle),/UND_ERR_SOCKET/);
+  assert.match(safeError(new AggregateError([Object.assign(Error('dns'),{code:'EAI_AGAIN'})],'fetch failed')),/EAI_AGAIN/);
+});
+
+test('fee lookup uses the same short public deadline and rate limits honor retry-after without blocking the engine',async()=>{
+  const venue=new Polymarket();let calls=0;
+  venue.public={fetchMarket:async()=>({id:'1',slug:'btc',conditionId:'c',version:'v1',
+    state:{active:true,closed:false,acceptingOrders:true},trading:{feesEnabled:true},
+    outcomes:{yes:{label:'UP',tokenId:'u'},no:{label:'DOWN',tokenId:'d'}}}),
+    fetchMarketInfo:async(_params,options)=>{calls++;assert.equal(options.retries,0);assert.equal(options.timeout,2500);
+      throw Object.assign(Error('rate limited'),{name:'RateLimitError',retryAfter:10});}};
+  await assert.rejects(venue.market(1800000000),/CLOB.*HTTP 429.*10/);
+  await assert.rejects(venue.market(1800000000),/CLOB.*HTTP 429/);
+  assert.equal(calls,1);
+});
 
 test('market normalization maps UP/DOWN by labels and chooses IDs by explicit protocol version', () => {
   const raw = { id: '1', slug: 'btc', version: 'v2', state: { active: true, closed: false, acceptingOrders: true },

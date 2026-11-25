@@ -4,8 +4,57 @@ import {Store} from '../server/store.mjs';
 import {PreviousDirectionEngine} from '../server/previous-direction-engine.mjs';
 import {LossFollowEngine} from '../server/loss-follow-engine.mjs';
 import {stakeAmount} from '../src/stake-amount.mjs';
+import {createApp} from '../server/index.mjs';
+import {apiPath} from '../src/api.mjs';
 
 const round=1800000000;
+test('live follower uses paper loss evidence, its own limits, and a single live execution',async t=>{
+  const f=fixture(t);
+  const liveStore=new Store(':memory:');t.after(()=>liveStore.close());
+  let authenticated=false,submitted=0;
+  const venue={
+    readiness:()=>({enabled:true,configured:true,authenticated}),
+    balance:async()=>100,
+    buy:async(order,quote,canSubmit)=>{
+      assert.equal(canSubmit(),true);assert.equal(order.mode,'live');assert.equal(order.budget,5);
+      assert.equal(order.strategyVersion,'LF-002');assert.equal(quote.priceLimit,.7);
+      submitted++;return {ok:true,orderId:'venue-order'};
+    },
+  };
+  const initialConfig={baseAmount:5,maxAmount:21,maxDoublings:3,stopLoss:120};
+  const live=new LossFollowEngine(liveStore,venue,{source:f.source,mode:'live',initialConfig,now:()=>round*1000+1000});
+  assert.equal(liveStore.account('live').config.maxAmount,21);
+  const reopened=new LossFollowEngine(liveStore,venue,{source:f.source,mode:'live',initialConfig:{...initialConfig,baseAmount:9}});
+  assert.equal(reopened.store.account('live').config.baseAmount,5);
+  await assert.rejects(live.start('live'),/连接/);
+  authenticated=true;
+  for(const offset of [-900,-600])f.order(f.sourceStore,round+offset,'lost');
+  assert.equal(live.signal(round).code,'LOSS_FOLLOW_WAIT');
+  f.order(f.sourceStore,round-300,'lost');
+  f.market(round);
+  live.market=f.follower.market;live.market.fetchedAt=round*1000;
+  live.books=f.follower.books;live.books.DOWN.fetchedAt=round*1000;
+  const server=createApp(f.source,{lossFollowLiveEngine:live,allowedModes:[]}).listen(0,'127.0.0.1');
+  await new Promise(resolve=>server.once('listening',resolve));
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const origin='http://127.0.0.1:'+server.address().port;
+  const base=origin+'/loss-follow-live/api';
+  const state=await fetch(base+'/state').then(r=>r.json());
+  assert.equal(state.accounts.live.running,false);
+  assert.equal(state.accounts.live.stakeIncrement,5);
+  assert.equal(state.lossFollow.losses,3);
+  assert.equal(apiPath('live/start','/loss-follow-live'),'/loss-follow-live/api/live/start');
+  assert.equal((await fetch(origin+'/bollinger/api/state')).status,410);
+  assert.equal((await fetch(base+'/paper/report')).status,400);
+  assert.equal((await fetch(base+'/live/report')).status,200);
+  await live.start('live');await live.attempt('live');await live.attempt('live');
+  assert.equal(submitted,1);
+  assert.equal(liveStore.orderForRound('live',round).status,'confirming');
+  assert.equal(liveStore.orderCount('paper'),0);
+  assert.equal(f.sourceStore.orderCount('paper'),3);
+  assert.equal(live.nextAmount({...liveStore.account('live'),losses:1}),15);
+});
+
 function fixture(t){
   let now=round*1000+290000,tick={time:now,price:95};
   const sourceStore=new Store(':memory:'),store=new Store(':memory:');

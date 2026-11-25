@@ -11,8 +11,23 @@ export async function timedFetch(input, init = {}) {
   return fetch(input, { ...init, signal: AbortSignal.any(signals) });
 }
 
+const PUBLIC_READ_TIMEOUT_MS=2500;
+// Only concurrent public reads share work. Completed responses are never cached.
+// Partition by both price source and transport, so test/custom venues stay isolated.
+const publicReads=new WeakMap();
+
 export function safeError(error) {
   let message = String(error?.message || error || '未知错误');
+  const codes=new Set(),seen=new Set();
+  for(let cause=error;cause&&typeof cause==='object'&&!seen.has(cause);cause=cause.cause){
+    seen.add(cause);
+    if(typeof cause.code==='string'&&/^[A-Z][A-Z0-9_]{1,60}$/.test(cause.code))codes.add(cause.code);
+    if(cause.name==='TimeoutError')codes.add('TIMEOUT');
+    if(cause instanceof AggregateError)for(const item of cause.errors)
+      if(typeof item?.code==='string'&&/^[A-Z][A-Z0-9_]{1,60}$/.test(item.code))codes.add(item.code);
+  }
+  const detail=[...codes].filter(code=>!message.includes(code));
+  if(detail.length)message+=` [${detail.join(', ')}]`;
   for (const [key, value] of Object.entries(process.env)) {
     if (/PRIVATE_KEY|SECRET|PASSPHRASE|API_KEY/i.test(key) && value) message = message.replaceAll(value, '[已隐藏]');
   }
@@ -138,17 +153,44 @@ export class Polymarket {
   async redemptionReceipt(transactionId){
     return fetchTransaction(await this.authenticate(),{transactionId},{retries:0});
   }
+  readPublic(key,label,load){
+    let transports=publicReads.get(this.priceFeed);
+    if(!transports){transports=new WeakMap();publicReads.set(this.priceFeed,transports);}
+    let group=transports.get(this.fetch);
+    if(!group){group={inflight:new Map(),rateLimits:new Map()};transports.set(this.fetch,group);}
+    const {inflight,rateLimits}=group;
+    for(const [key,limit] of rateLimits)if(limit.until<=Date.now())rateLimits.delete(key);
+    if(rateLimits.has(key))return Promise.reject(rateLimits.get(key).error);
+    let task=inflight.get(key);
+    if(!task){
+      const options={retries:0,timeout:PUBLIC_READ_TIMEOUT_MS,signal:AbortSignal.timeout(PUBLIC_READ_TIMEOUT_MS)};
+      task=Promise.resolve().then(()=>load(options)).catch(error=>{
+        const limited=error?.name==='RateLimitError',retryAfter=Number(error?.retryAfter);
+        const seconds=limited?Math.max(1,Number.isFinite(retryAfter)?retryAfter:1):0;
+        const wrapped=new Error(`${label}请求失败：${limited?'HTTP 429；':''}${safeError(error)}${limited?`；${seconds}秒后重试`:''}`,{cause:error});
+        if(limited)rateLimits.set(key,{until:Date.now()+seconds*1000,error:wrapped});
+        throw wrapped;
+      }).finally(()=>{if(inflight.get(key)===task)inflight.delete(key);});
+      inflight.set(key,task);
+    }
+    return task.then(value=>structuredClone(value));
+  }
   async market(start) {
-    const raw = await this.public.fetchMarket({ slug: `btc-updown-5m-${start}` });
+    const raw = await this.readPublic(`market:${start}`,`Gamma 市场 #${start}`,
+      options=>this.public.fetchMarket({ slug: `btc-updown-5m-${start}` },options));
     const market = normalizeMarket(raw, start);
     if (!market.feeSchedule && market.conditionId) {
-      const info = await this.public.fetchMarketInfo({ conditionId: market.conditionId });
+      const info = await this.readPublic(`fees:${market.conditionId}`,'CLOB 市场费用信息',
+        options=>this.public.fetchMarketInfo({ conditionId: market.conditionId },options));
       market.feeSchedule = info.feeInfo;
     }
     return market;
   }
   async books(market) {
-    const results = await this.public.fetchOrderBooks(market.outcomes.map(o => ({ assetId: o.assetId })));
+    const ids=market.outcomes.map(o=>o.assetId).sort();
+    const key=JSON.stringify(['books',market.round,market.conditionId,market.version,ids]);
+    const results = await this.readPublic(key,`CLOB 双向盘口 #${market.round}`,
+      options=>this.public.fetchOrderBooks(market.outcomes.map(o => ({ assetId: o.assetId })),options));
     const books = {};
     for (const outcome of market.outcomes) {
       const book = results.find(b => b.assetId === outcome.assetId);
@@ -158,6 +200,28 @@ export class Polymarket {
         bids: [...book.bids].sort((a, b) => Number(b.price) - Number(a.price)) };
     }
     return books;
+  }
+  async preparePriceFeed(start,isCurrent=()=>true){
+    if(!isCurrent()||roundStart(this.now())!==start)return null;
+    const slug=`btc-updown-5m-${start}`,query=new URLSearchParams({slug,limit:'1'});
+    const events=await this.readPublic(`oracle:${start}`,`Gamma BTC预言机配置 #${start}`,async options=>{
+      const response=await this.fetch(`https://gamma-api.polymarket.com/events?${query}`,{signal:options.signal});
+      if(!response.ok){
+        const error=Error(`HTTP ${response.status}`);
+        if(response.status===429){
+          const value=response.headers?.get('retry-after'),seconds=Number(value);
+          error.name='RateLimitError';error.retryAfter=Number.isFinite(seconds)?seconds:(Date.parse(value)-Date.now())/1000;
+        }
+        throw error;
+      }
+      return response.json();
+    });
+    if(!isCurrent()||roundStart(this.now())!==start)return null;
+    const event=Array.isArray(events)?events.find(event=>event.slug===slug):null;
+    const market=event?.markets?.find(market=>market.slug===slug);
+    const spec=oracleSpec(market?.cryptoMarketConfig);
+    if(this.priceFeed.connect(spec,start)===false)throw Error('官方价格流已进入更新场次或本场预言机口径不一致');
+    return spec;
   }
   async spot() {
     const start = roundStart(this.now());

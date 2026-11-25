@@ -12,9 +12,11 @@ const periodKey=dates=>`${dates.startDate}:${dates.endDate}`;
 const paperReports=[
   {id:'previous',title:PAGE_BY_ID.previous.title,endpoint:'/previous/api/paper/report'},
   {id:'loss-follow',title:'三连亏跟随',endpoint:'/loss-follow/api/paper/report'},
-  {id:'bollinger',title:PAGE_BY_ID.bollinger.title,endpoint:'/bollinger/api/paper/report'},
   {id:'level-limited',title:PAGE_BY_ID['level-limited'].title,endpoint:'/level-limited/api/paper/report'},
 ];
+const liveReports=['previous-live','loss-follow-live'].map(id=>({
+  id,title:PAGE_BY_ID[id].title,endpoint:PAGE_BY_ID[id].path+'/api/live/report',
+}));
 
 export function ReportCalendar({data,month,selected,onSelect}){
   const cells=useMemo(()=>{
@@ -34,8 +36,9 @@ function Metric({title,value,note,tone}){return <div className="report-metric"><
 
 export default function ReportsPage({live=false}){
   const title=live?'实盘报表':'模拟盘报表';
-  const [strategy,setStrategy]=useState('previous');
-  const report=live?{title:'上场方向实盘',endpoint:'/previous-live/api/live/report'}:paperReports.find(item=>item.id===strategy);
+  const reports=live?liveReports:paperReports;
+  const [strategy,setStrategy]=useState(reports[0].id);
+  const report=reports.find(item=>item.id===strategy)??reports[0];
   const marketTitle=report.title,endpoint=report.endpoint;
   const [dates,setDates]=useState(()=>recentDates()),[draft,setDraft]=useState(()=>recentDates());
   const [month,setMonth]=useState(()=>recentDates().endDate.slice(0,7)),[selected,setSelected]=useState(()=>recentDates().endDate);
@@ -55,7 +58,7 @@ export default function ReportsPage({live=false}){
   return <div className="app reports-app"><Sidebar active={live?'live-reports':'reports'}/><div className="main-shell">
     <header className="topbar"><div className="breadcrumb">交易工作台 <ChevronRight size={13}/><strong>{title}</strong></div><span className="report-timezone">上海时间 · UTC+8</span></header>
     <main className="reports-main"><section className="page-heading"><div><div className="eyebrow">{live?'LIVE':'PAPER'} TRADING REPORTS</div><h1>{title}</h1><p>按策略查看每日交易收支与表现。</p></div><button className="button secondary small" disabled={loading} onClick={()=>setRefresh(value=>value+1)}><RefreshCw size={15} className={loading?'report-spinning':''}/>刷新报表</button></section>
-      {!live&&<nav className="report-tabs" aria-label="模拟盘报表策略">{paperReports.map(item=><button key={item.id} type="button" className={strategy===item.id?'active':''} aria-pressed={strategy===item.id} aria-controls="report-content" onClick={()=>setStrategy(item.id)}>{item.title}</button>)}</nav>}
+      <nav className="report-tabs" aria-label={title+'策略'}>{reports.map(item=><button key={item.id} type="button" className={report.id===item.id?'active':''} aria-pressed={report.id===item.id} aria-controls="report-content" onClick={()=>setStrategy(item.id)}>{item.title}</button>)}</nav>
       <section id="report-content" aria-label={`${marketTitle}报表`} aria-busy={loading}>
         <form className="panel report-filter" onSubmit={event=>{event.preventDefault();apply(draft);}}><label>开始日期<input aria-label="报表开始日期" type="date" required value={draft.startDate} onChange={event=>setDraft({...draft,startDate:event.target.value})}/></label><span className="report-date-to">至</span><label>结束日期<input aria-label="报表结束日期" type="date" required value={draft.endDate} onChange={event=>setDraft({...draft,endDate:event.target.value})}/></label><button className="button primary small" type="submit">查询</button><div className="report-shortcuts">{[7,30,90].map(days=><button type="button" key={days} onClick={()=>apply(recentDates(days))}>近 {days} 天</button>)}</div></form>
         {validation&&<p className="report-error" role="alert">{validation}</p>}

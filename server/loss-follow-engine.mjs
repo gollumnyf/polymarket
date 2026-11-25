@@ -4,15 +4,25 @@ import {ACTIVE_LOSS_FOLLOW_VERSION} from './strategy-versions.mjs';
 import {stakeAmount} from '../src/stake-amount.mjs';
 
 export class LossFollowEngine extends PreviousDirectionEngine {
-  constructor(store,venue,{source,...options}){
-    super(store,venue,{...options,mode:'paper',previousMarketStore:source.store});
+  constructor(store,venue,{source,mode='paper',initialConfig,...options}){
+    super(store,venue,{...options,mode,previousMarketStore:source.store});
     this.source=source;
     store.db.exec(`CREATE TABLE IF NOT EXISTS loss_follow_triggers (
       session TEXT NOT NULL REFERENCES account_sessions(id), source_round INTEGER NOT NULL,
       first_round INTEGER NOT NULL, second_round INTEGER NOT NULL, observed_at INTEGER NOT NULL,
       PRIMARY KEY(session,source_round)
     )`);
-    this.strategyVersion=store.registerStrategyVersion(ACTIVE_LOSS_FOLLOW_VERSION);
+    store.transaction(()=>{
+      const version=ACTIVE_LOSS_FOLLOW_VERSION;
+      const initialized=store.db.prepare('SELECT 1 FROM strategy_versions WHERE id=?').get(version.id);
+      if(mode==='live'&&initialConfig&&!initialized){
+        const account=store.account(mode);
+        store.saveAccount({...account,config:{...account.config,
+          baseAmount:initialConfig.baseAmount,maxAmount:initialConfig.maxAmount,
+          maxDoublings:initialConfig.maxDoublings,stopLoss:initialConfig.stopLoss}});
+      }
+      this.strategyVersion=store.registerStrategyVersion(version);
+    });
   }
   nextAmount(account){return stakeAmount(account.config.baseAmount,account.stakeLosses??account.losses,5);}
   resetStakeCycle(account){
@@ -48,8 +58,8 @@ export class LossFollowEngine extends PreviousDirectionEngine {
     return {result:(quote.price>=opening.open?'UP':'DOWN')===order.direction?'won':'lost',source:'polymarket_realtime',priceAt:quote.time};
   }
   monitor(start,now=this.now(),preview=false){
-    const own=this.store.account('paper'),from=this.source.store.account('paper');
-    const latest=this.store.recentFilledOrders('paper',own.session,1,{ignoreVoid:true})[0];
+    const own=this.store.account(this.mode),from=this.source.store.account('paper');
+    const latest=this.store.recentFilledOrders(this.mode,own.session,1,{ignoreVoid:true})[0];
     const latestResult=latest?this.evidence(this,latest,now):null;
     const ownWon=latestResult?.result==='won';
     const trigger=this.store.db.prepare('SELECT * FROM loss_follow_triggers WHERE session=? ORDER BY source_round DESC LIMIT 1').get(own.session);
@@ -73,7 +83,7 @@ export class LossFollowEngine extends PreviousDirectionEngine {
       armed,activeFrom:active?(armed?trigger.source_round:latest.round):null};
   }
   arm(start=roundStart(this.now())){
-    const account=this.store.account('paper');
+    const account=this.store.account(this.mode);
     if(!account.running)return;
     const state=this.monitor(start);
     if(state.active||state.losses<3)return;
@@ -107,7 +117,7 @@ export class LossFollowEngine extends PreviousDirectionEngine {
   }
   snapshot(){
     const result=super.snapshot(),round=roundStart(this.now()),source=this.source.store.account('paper');
-    result.accounts.paper.stakeIncrement=5;
+    result.accounts[this.mode].stakeIncrement=5;
     return {...result,strategy:'previous_round_loss_follow',lossFollow:{...this.monitor(round,this.now(),true),
       minPrice:source.config.minPrice,maxPrice:source.config.maxPrice}};
   }

@@ -16,22 +16,22 @@ import {RangeStore} from './range-store.mjs';
 import {Store} from './store.mjs';
 import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
 import {LossFollowEngine} from './loss-follow-engine.mjs';
-import {BollingerStore,BollingerEngine} from './bollinger-engine.mjs';
 import {LevelLimitedStore,LevelLimitedEngine,independentLevelRange} from './level-limited-engine.mjs';
 import {tradingReport} from './reports.mjs';
 import {serveUiStream} from './ui-stream.mjs';
 
-export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,previousLiveEngine=null,lossFollowEngine=null,bollingerEngine=null,levelLimitedEngine=null,adaptiveObserver=null,allowedModes=['paper','live'],legacyRangeLiveRetired=false,chart=null } = {}) {
+export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,previousLiveEngine=null,lossFollowEngine=null,lossFollowLiveEngine=null,levelLimitedEngine=null,adaptiveObserver=null,allowedModes=['paper','live'],legacyRangeLiveRetired=false,chart=null } = {}) {
   const app = express();
   app.disable('x-powered-by');
   if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,adaptiveObserver,allowedModes:['paper'],chart}));
   if(previousEngine)app.use('/previous',createApp(previousEngine,{history:previousEngine.history,onShutdown,allowedModes:['paper'],chart}));
   if(previousLiveEngine)app.use('/previous-live',createApp(previousLiveEngine,{history:previousLiveEngine.history,onShutdown,allowedModes:['live'],chart}));
   if(lossFollowEngine)app.use('/loss-follow',createApp(lossFollowEngine,{history:lossFollowEngine.history,onShutdown,allowedModes:['paper'],chart}));
-  if(bollingerEngine)app.use('/bollinger',createApp(bollingerEngine,{history:bollingerEngine.history,onShutdown,allowedModes:['paper'],chart}));
+  if(lossFollowLiveEngine)app.use('/loss-follow-live',createApp(lossFollowLiveEngine,{history:lossFollowLiveEngine.history,onShutdown,allowedModes:['live'],chart}));
   if(levelLimitedEngine)app.use('/level-limited',createApp(levelLimitedEngine,{history:levelLimitedEngine.history,onShutdown,allowedModes:['paper'],chart:{...chart,range:levelLimitedEngine.levels}}));
   app.use('/gam',(req,res)=>res.status(410).json({error:'GAM 均值方差模块已移除'}));
   app.use('/lead',(req,res)=>res.status(410).json({error:'行情领先与配对模块已移除'}));
+  app.use('/bollinger',(_req,res)=>res.status(410).json({error:'布林模拟已下线，历史数据库已保留'}));
   const token = randomBytes(32).toString('hex');
   const service={name:'polymarket-btc-console',root:resolve(fileURLToPath(new URL('../',import.meta.url))),pid:process.pid,instanceId:randomBytes(12).toString('hex'),shutdownEnabled:typeof onShutdown==='function'};
   app.use((req, res, next) => {
@@ -75,20 +75,6 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
     });
   }
   app.get('/api/state', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.json({ ...engine.snapshot(), controlToken: token }); });
-  if(engine instanceof BollingerEngine){
-    app.post('/api/bollinger-settings',(req,res,next)=>{
-      try{res.json(engine.configureBollinger(req.body));}catch(error){next(error);}
-    });
-    app.get('/api/bollinger-history',(req,res,next)=>{
-      res.setHeader('Cache-Control','no-store');
-      if(engine.canRunBackground()===false)return res.status(202).json({pending:true});
-      try{
-        engine.bollingerRepair.marketStore=chart?.store??engine.marketStore;
-        res.json(engine.bollingerRepair.read(engine.store.bollingerSettings(),chart?.feed?.spec?.seconds??engine.spot?.windowSeconds??60));
-      }
-      catch(error){next(error);}
-    });
-  }
   for(const mode of allowedModes.length===1?allowedModes:[])app.get(`/api/${mode}/report`,(req,res,next)=>{
     try {res.setHeader('Cache-Control','no-store');res.json(tradingReport(engine.store,mode,{startDate:req.query.startDate,endDate:req.query.endDate}));}
     catch(error){next(error);}
@@ -249,9 +235,14 @@ async function main() {
   const lossFollowStore=new Store(resolve(root,'data/loss-follow.sqlite'));
   const lossFollowVenue=new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true});
   const lossFollowEngine=new LossFollowEngine(lossFollowStore,lossFollowVenue,{source:previousEngine,marketStore:rangeStore});
-  const bollingerStore=new BollingerStore(resolve(root,'data/previous-bollinger.sqlite'),{sourceConfig:previousStore.account('paper').config});
-  const bollingerVenue=new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true});
-  const bollingerEngine=new BollingerEngine(bollingerStore,bollingerVenue,{marketStore:rangeStore,previousMarketStore:previousStore});
+  const lossFollowLiveStore=new Store(resolve(root,'data/loss-follow-live.sqlite'));
+  const lossFollowLiveVenue=new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true});
+  const lossFollowLiveEngine=new LossFollowEngine(lossFollowLiveStore,lossFollowLiveVenue,{
+    mode:'live',source:previousEngine,marketStore:rangeStore,initialConfig:previousLiveStore.account('live').config});
+  lossFollowLiveEngine.redemption=new LiveRedemption(lossFollowLiveEngine);
+  const redemptionWorkers=[previousLiveEngine.redemption,lossFollowLiveEngine.redemption];
+  redemptionWorkers[0].peer=redemptionWorkers[1];
+  redemptionWorkers[1].peer=redemptionWorkers[0];
   const levelLimitedStore=new LevelLimitedStore(resolve(root,'data/previous-level-limited.sqlite'),{
     sourceConfig:previousStore.account('paper').config,chartSettings:rangeStore.chartSettings(),levelLagMinutes:rangeStore.rangeConfig().levelLagMinutes});
   const limitedRange=independentLevelRange(levelLimitedStore,rangeStore,priceFeed);
@@ -259,7 +250,7 @@ async function main() {
     {marketStore:rangeStore,previousMarketStore:previousStore,levels:limitedRange});
   rangeEngine.extraLevelHistoryStart=()=>Math.floor(Date.now()/300000)*300-
     (levelLimitedStore.chartSettings().levelLookbackMinutes+levelLimitedStore.levelLagMinutes())*60;
-  const tradingEngines=[previousLiveEngine,previousEngine,lossFollowEngine,bollingerEngine,levelLimitedEngine];
+  const tradingEngines=[previousLiveEngine,lossFollowLiveEngine,previousEngine,lossFollowEngine,levelLimitedEngine];
   let closing=false;
   const chartOpening=new ChartOpening({onSpec:(spec,round)=>{if(!closing)priceFeed.connect(spec,round);}});
   const chartRange=new ChartRange(rangeEngine,priceFeed);
@@ -271,7 +262,7 @@ async function main() {
     engine.canRunBackground=canRunBackground;
     if(engine.history)engine.history.canRefresh=canRunBackground;
   }
-  const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,lossFollowEngine,bollingerEngine,levelLimitedEngine,allowedModes:[],legacyRangeLiveRetired:true,chart:{feed:priceFeed,opening:chartOpening,range:chartRange,store:rangeStore}});
+  const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,lossFollowEngine,lossFollowLiveEngine,levelLimitedEngine,allowedModes:[],legacyRangeLiveRetired:true,chart:{feed:priceFeed,opening:chartOpening,range:chartRange,store:rangeStore}});
   app.get(['/','/paper','/momentum','/momentum/'],(_req,res)=>res.redirect('/previous'));
   app.use('/copy',(_req,res)=>res.status(410).json({error:'跟单观察盘已移除'}));
   app.get(['/live','/live/'],(_req,res)=>res.redirect('/previous-live'));
@@ -316,7 +307,9 @@ async function main() {
       limitedRange.poll(canRunBackground());
     }catch(error){console.error(safeError(error));}
   },1000);
-  const redemptionTimer=setInterval(()=>previousLiveEngine.redemption.tick(),2500);
+  const redemptionTimer=setInterval(()=>{
+    for(const worker of redemptionWorkers)worker.tick();
+  },2500);
   tick();
   async function close() {
     if (closing) return; closing = true;for(const current of engines)current.closing=true;
@@ -328,9 +321,10 @@ async function main() {
     // Outstanding venue requests have a 10s deadline. Preserve reservations until
     // the process exits so a restart never treats them as a new opportunity.
     const deadline = Date.now() + 25000;
-    while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.displayBalanceTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.redemption?.task||current.bollingerRepair?.task||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.displayBalanceTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.redemption?.task||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
     priceFeed.close();
-    store.close();previousStore.close();previousLiveStore.close();lossFollowStore.close();bollingerStore.close();levelLimitedStore.close();rangeStore.close();process.exit(0);
+    for(const ledger of [store,previousStore,previousLiveStore,lossFollowStore,lossFollowLiveStore,levelLimitedStore,rangeStore])ledger.close();
+    process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);
 }

@@ -201,6 +201,19 @@ test('paper discards opening books for token IDs that failed market revalidation
   assert.equal(engine.books.UP.assetId,'new-up');
 });
 
+test('a transient market refresh failure retries next second and still passes the original entry checks',async t=>{
+  const {engine,store,market,official}=fixture(t);official(start-300,'UP');await engine.start('paper');
+  market(start,0);let calls=0;
+  engine.venue.market=async()=>{calls++;if(calls===1)throw Error('fetch failed');return {...engine.market,fetchedAt:engine.now()};};
+  engine.venue.books=async()=>engine.books;
+  await engine.refreshMarketBooks(start,[]);await engine.attempt('paper');
+  assert.equal(calls,1);assert.equal(store.orderCount('paper'),0);assert.ok(engine.errors.market);
+  market(start,1);await engine.refreshMarketBooks(start,[]);await engine.attempt('paper');
+  assert.equal(calls,2);assert.equal(engine.errors.market,undefined);assert.equal(store.orderCount('paper'),1);
+  assert.equal(store.orderForRound('paper',start).direction,'DOWN');
+  assert.equal(engine.marketPollInterval(start),10000);
+});
+
 test('entry work runs while background history, spot refresh, settlement and balance display are deferred',async t=>{
   const {engine,store,market}=fixture(t);
   const events=[];

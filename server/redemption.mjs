@@ -47,6 +47,27 @@ export class LiveRedemption {
     this.db.prepare('UPDATE live_redemptions SET status=?,message=?,transaction_id=?,transaction_hash=?,next_check=?,updated_at=? WHERE order_id=?')
       .run(status,message,id??null,hash??null,now+delay,now,job.order_id);
   }
+  matchingPeerRedemption(job){
+    if(!this.peer)return null;
+    // A v1 redemption covers the condition. A v2 redemption covers one position.
+    const match=job.market_version==='v1'?'o.condition_id=?':'o.asset_id=?';
+    return this.peer.db.prepare(`SELECT r.status,r.transaction_id,r.transaction_hash
+      FROM live_redemptions r JOIN orders o ON r.order_id=o.id
+      WHERE r.wallet=? AND r.market_version=? AND ${match}
+        AND r.status IN ('submitting','submitted','confirmed','uncertain')
+      ORDER BY r.updated_at DESC LIMIT 1`).get(job.wallet,job.market_version,
+        job.market_version==='v1'?job.condition_id:job.asset_id);
+  }
+  usePeerRedemption(job){
+    const peer=this.matchingPeerRedemption(job);
+    if(!peer)return false;
+    if(peer.status==='confirmed'||peer.status==='submitted'){
+      this.update(job,peer.status,'同一钱包的份额已由另一实盘统一提交兑换',{
+        id:peer.transaction_id,hash:peer.transaction_hash,delay:5000});
+      if(peer.status==='confirmed')this.lastBalance=0;
+    }
+    return true;
+  }
   async run(ready,now){
     const wallet=ready.wallet.toLowerCase();
     const latest=this.db.prepare(`SELECT max(o.settled_at) AS settled FROM orders o JOIN live_redemptions r ON o.id=r.order_id
@@ -67,15 +88,19 @@ export class LiveRedemption {
               this.lastBalance=0;
             }else if(FAILED.has(tx.state))this.update(job,'failed','兑换交易明确失败，请在 Polymarket 核对');
             else this.update(job,'submitted','等待链上确认',{hash:tx.transactionHash??job.transaction_hash,delay:5000});
+          }else if(this.usePeerRedemption(job)){
+            // The other ledger already tracks the wallet-wide redemption.
           }else if(await this.venue.hasRedeemablePosition(job)&&this.hasTime()){
             const tx=await this.venue.redeemPosition(job,()=>{
               if(submitted||!this.hasTime())throw Error('已进入下单时段，兑换推迟');
+              if(this.usePeerRedemption(job))throw Error('同一钱包的份额已有兑换记录，避免重复提交');
               this.update(job,'submitting','已预留链上提交');submitted=true;
             });
             if(!tx.transactionId)throw Error('Relayer 未返回兑换交易编号');
             this.update(job,'submitted','等待链上确认',{id:tx.transactionId,hash:tx.transactionHash,delay:5000});
           }else this.update(job,'waiting','等待平台显示可兑换份额或空闲时段');
         }catch(error){
+          if(!submitted&&job.status==='waiting'&&this.usePeerRedemption(job))return;
           const message=this.venue.cleanWalletError(error);
           this.update(job,submitted?'uncertain':job.status,message);
           this.engine.log('live','warning','后台兑换：'+message);

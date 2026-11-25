@@ -1,11 +1,10 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {Activity} from 'lucide-react';
 import {chartTimeWindow,holdChartForOpening} from './chart-prices.mjs';
-import {visibleBollingerBands} from './bollinger.mjs';
 const fmt=(n,digits=2)=>n==null||!Number.isFinite(Number(n))?'—':Number(n).toLocaleString('en-US',{minimumFractionDigits:digits,maximumFractionDigits:digits});
 const time=(seconds,includeSeconds=false)=>new Date(seconds*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',...(includeSeconds?{second:'2-digit'}:{}),hour12:false});
 
-export default function PriceChart({ ticks, reference, provisionalReference=false, start, now, range,zone,boundary,edgePercent=20,bands=[],bandIntervalSeconds=60 }) {
+export default function PriceChart({ ticks, reference, provisionalReference=false, start, now, range,zone,boundary,edgePercent=20 }) {
   const [hover, setHover] = useState(null);
   const chartRef = useRef(null);
   const [size, setSize] = useState({ width: 900, height: 300 });
@@ -25,8 +24,6 @@ export default function PriceChart({ ticks, reference, provisionalReference=fals
   const waitingForTarget=holdChartForOpening({range,start,now,reference});
   const points=useMemo(()=>waitingForTarget?[]:ticks.filter(t=>t.time>=xmin&&t.time<=visibleThrough),[ticks,xmin,visibleThrough,waitingForTarget]);
   const bounds = points.map(p => p.price);
-  const visibleBands=waitingForTarget?[]:visibleBollingerBands(bands,{xmin,visibleThrough,intervalSeconds:bandIntervalSeconds});
-  for(const band of visibleBands)bounds.push(band.upper,band.lower);
   if (reference) bounds.push(reference);
   const hasZone=Number.isFinite(zone?.lower)&&Number.isFinite(zone?.upper);
   if(hasZone)bounds.push(zone.lower,zone.upper);
@@ -43,7 +40,6 @@ export default function PriceChart({ ticks, reference, provisionalReference=fals
   const x = t => left + (t - xmin) / (xmax - xmin) * plotWidth;
   const y = p => top + (max - p) / (max - min) * plotHeight;
   const path = points.map((p, i) => `${i ? 'L' : 'M'} ${x(p.time).toFixed(2)} ${y(p.price).toFixed(2)}`).join(' ');
-  const bandPath=key=>visibleBands.map((p,i)=>`${i&&!p.segment?'L':'M'} ${x(p.time).toFixed(2)} ${y(p[key]).toFixed(2)}`).join(' ');
   const last = points.at(-1);
   const onMove = event => {
     if (!points.length) return;
@@ -71,7 +67,6 @@ export default function PriceChart({ ticks, reference, provisionalReference=fals
       {hasZone&&<g><line x1={left} x2={right} y1={y(zone.upper)} y2={y(zone.upper)} stroke="#d99676" strokeDasharray="6 4"/><line x1={left} x2={right} y1={y(zone.lower)} y2={y(zone.lower)} stroke="#8ccaac" strokeDasharray="6 4"/><text x={left+8} y={Math.max(top+10,y(zone.upper)-5)} fill="#d99676" fontSize="11">{zone.phase?'压力':'候选压力'}{zone.resistanceSource==='secondary_pivot'?'（次高峰）':''} {fmt(zone.upper)}</text><text x={left+8} y={Math.min(bottom-4,y(zone.lower)+14)} fill="#8ccaac" fontSize="11">{zone.phase?'支撑':'候选支撑'}{zone.supportSource==='secondary_pivot'?'（次低谷）':''} {fmt(zone.lower)}</text></g>}
       {hasActualZone&&[ ['实际最高',zone.actualUpper,zone.upper,'#d99676'],['实际最低',zone.actualLower,zone.lower,'#8ccaac'] ].filter(([,price,inner])=>price!==inner).map(([label,price,,color])=><g key={label}><line x1={left} x2={right} y1={y(price)} y2={y(price)} stroke={color} strokeDasharray="2 3"/><text x={right-6} y={Math.max(top+10,y(price)-4)} fill={color} fontSize="11" textAnchor="end">{label} {fmt(price)}</text></g>)}
       {reference && <line x1={left} x2={right} y1={y(reference)} y2={y(reference)} stroke={provisionalReference?"#d3aa64":"#78818f"} strokeDasharray="5 5"/>}
-      {visibleBands.length>0&&<g className="chart-bollinger" pointerEvents="none">{[['upper','#b19aff'],['middle','#edc56b'],['lower','#67b8ed']].map(([key,color])=><path key={key} d={bandPath(key)} fill="none" stroke={color} strokeWidth="1.5" strokeDasharray={key==='middle'?'4 3':undefined} strokeLinejoin="round"/>)}</g>}
       {points.length > 1 && <>
         <path d={`${path} L ${x(last.time)} ${bottom} L ${x(points[0].time)} ${bottom} Z`} fill="url(#chartFill)"/>
         <path d={path} fill="none" stroke="#61d9b0" strokeWidth="2.3" strokeLinejoin="round" strokeLinecap="round"/>

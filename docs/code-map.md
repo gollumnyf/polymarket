@@ -12,9 +12,10 @@
 | 页面连接与刷新性能 | server/ui-stream.mjs（独立状态/行情生产，共用SSE连接）、src/page-stream.mjs（隐藏页断开/可见重连）、src/coalesced-refresh.mjs（分页版本刷新合并）；[诊断说明](UI_PERFORMANCE.md) |
 | 本机 API、后台请求调度与退出 | server/index.mjs、scripts/service-control.mjs |
 | 固定反买、开盘预取与报价 | server/previous-direction-engine.mjs、server/engine.mjs、server/strategy.mjs |
-| 上场方向震荡区间内模拟 | /level-limited；server/level-limited-engine.mjs（独立配置、区间过滤和入场证据）、server/chart-range.mjs；[专用说明](LEVEL_LIMITED.md) |
-| 上场方向布林模拟 | /bollinger；server/bollinger-engine.mjs、server/bollinger-history.mjs（官方历史补数与缓存）、src/bollinger.mjs、src/BollingerChart.jsx、src/BollingerSettings.jsx；[专用说明](BOLLINGER.md) |
+| 上场方向震荡区间模拟 | /level-limited；server/level-limited-engine.mjs（独立配置、区间过滤和入场证据）、server/polymarket.mjs.preparePriceFeed（开盘必要口径核实，不依赖图表/后台spot）、server/chart-range.mjs；[专用说明](LEVEL_LIMITED.md) |
+| 三连亏跟随模拟与实盘 | `/loss-follow`、`/loss-follow-live`，`server/loss-follow-engine.mjs` 共用触发和资金规则，`server/redemption.mjs` 处理实盘兑换 |
 | Polymarket 请求、链上兑换及行情 | server/polymarket.mjs、server/redemption.mjs、server/price-feed.mjs |
+| 市场/盘口网络故障恢复 | server/polymarket.mjs.readPublic（短超时、并发合并、429冷却、网络代码）、server/engine.mjs.marketPollInterval（失败后1秒重查）；[说明](MARKET_CONNECTIVITY.md) |
 | 市场历史与持久化 | server/history.mjs、server/store.mjs、server/schema.sql、[数据库文档](database.md) |
 
 range 模块保留图表参考和归档相关能力。旧选向规则见 [区间策略归档](research/legacy-range-rules.md)。

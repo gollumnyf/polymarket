@@ -16,7 +16,8 @@ export default function Settings({account,mode,busy,pending,onSave,momentum=fals
   if(adaptive)fields.splice(fields.findIndex(field=>field[0]==='entryWindow'),1);
   if(previous){
     for(const key of ['entryDelay','entryWindow','slippage'])fields.splice(fields.findIndex(field=>field[0]===key),1);
-    fields.splice(fields.findIndex(field=>field[0]==='maxPrice'),0,['minPrice','每份最低买入价','pUSD','.01','.99','.01']);
+    if(lossFollow)fields.splice(fields.findIndex(field=>field[0]==='maxPrice'),1);
+    else fields.splice(fields.findIndex(field=>field[0]==='maxPrice'),0,['minPrice','每份最低买入价','pUSD','.01','.99','.01']);
   }
   if(mode==='paper')fields.push(['initialBalance','重置后的模拟初始资金','pUSD',1,10000000,'.01']);
   return <form onSubmit={event=>{event.preventDefault();onSave(rangeMode?{...withEntryMode({...config,entryWindow:Math.round(Number(entryMinutes)*60)},'independent'),rangeConfig:rangeDraft}:withEntryMode(config,selected.value));}}>

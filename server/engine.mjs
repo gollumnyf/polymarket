@@ -119,7 +119,7 @@ export class Engine extends EventEmitter {
     this.displayBalanceTask=Promise.resolve().then(()=>this.venue.balance()).then(()=>{delete this.errors.wallet;})
       .catch(error=>{this.errors.wallet=safeError(error);}).finally(()=>{this.displayBalanceTask=null;});
   }
-  marketPollInterval(_start){return 10000;}
+  marketPollInterval(_start){return this.errors.market?1000:10000;}
   async refreshMarketBooks(start,tasks){
     if(!this.market||this.now()-this.lastMarketPoll>=this.marketPollInterval(start)){
       this.lastMarketPoll=this.now();

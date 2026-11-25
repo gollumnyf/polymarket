@@ -3,6 +3,7 @@ import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
 import {ChartRange} from './chart-range.mjs';
 import {roundStart} from './strategy.mjs';
 import {LEVEL_LIMITED_VERSION} from './strategy-versions.mjs';
+import {safeError} from './polymarket.mjs';
 
 export class LevelLimitedStore extends Store{
   constructor(path,{sourceConfig,chartSettings={levelLookbackMinutes:60,middlePercent:60},levelLagMinutes=15}={}){
@@ -56,10 +57,21 @@ export class LevelLimitedEngine extends PreviousDirectionEngine{
     super(store,venue,{...options,mode:'paper'});this.levels=levels;
     this.strategyVersion=store.registerStrategyVersion(LEVEL_LIMITED_VERSION);
   }
+  async refreshMarketBooks(start,tasks){
+    const feed=this.venue.priceFeed,account=this.store.account('paper');
+    if(account.running&&this.now()/1000-start<=account.config.entryWindow&&
+      (feed?.round!==start||!Number.isFinite(feed.spec?.seconds))&&this.venue.preparePriceFeed){
+      // Oracle identity is required to filter entry prices, even with no chart open.
+      // Fetch only that identity alongside market/books; target/history stay deferred.
+      tasks.push(this.venue.preparePriceFeed(start,()=>!this.closing).then(()=>{delete this.levelFeedError;})
+        .catch(error=>{if(!this.closing)this.levelFeedError={round:start,message:safeError(error)};}));
+    }
+    return super.refreshMarketBooks(start,tasks);
+  }
   levelCheck(start=roundStart(this.now())){
     const now=this.now(),feed=this.venue.priceFeed;
     const block=(code,message,fields={})=>({allowed:false,code,message,...fields});
-    if(feed?.round!==start||!Number.isFinite(feed.spec?.seconds))return block('LEVEL_PRICE_ROUND_MISSING',`等待本场 #${start} 的官方BTC价格流及预言机口径`);
+    if(feed?.round!==start||!Number.isFinite(feed.spec?.seconds))return block('LEVEL_PRICE_ROUND_MISSING',`等待本场 #${start} 的官方BTC价格流及预言机口径；当前价格流场次 ${feed?.round==null?'未确认':'#'+feed.round}${this.levelFeedError?.round===start?'；'+this.levelFeedError.message:''}`);
     const point=feed.recent?.(1)?.at(-1);
     if(!Number.isFinite(point?.price)||point.price<=0||!Number.isFinite(point.time))return block('LEVEL_PRICE_MISSING',`本场 #${start} 尚无有效官方BTC报价`);
     if(point.time<start*1000)return block('LEVEL_PRICE_BEFORE_OPEN',`本场 #${start} 的官方报价尚未到达：最新采样早于开盘 ${start*1000-point.time} 毫秒`);
@@ -82,7 +94,7 @@ export class LevelLimitedEngine extends PreviousDirectionEngine{
     const level=this.levelCheck(start);
     return {...signal,direction:level.allowed?signal.direction:null,code:level.code,message:signal.message+'；'+level.message};
   }
-  orderSignalFields(account,start){return {...super.orderSignalFields(account,start),signalRule:'previous_round_level_limited',levelLimit:this.levelCheck(start)};}
+  orderSignalFields(account,start){const level=this.levelCheck(start);return {...super.orderSignalFields(account,start),signalRule:'previous_round_level_limited',oracleWindow:level.oracleWindow,levelLimit:level};}
   snapshot(){return {...super.snapshot(),levelLimit:this.levelCheck()};}
 }
 
