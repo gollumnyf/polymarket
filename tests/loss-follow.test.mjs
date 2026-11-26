@@ -67,9 +67,9 @@ function fixture(t){
   const source=new PreviousDirectionEngine(sourceStore,venue,{now:()=>now});
   source.signal=()=>({direction:'DOWN',code:null,message:'source signal'});
   const follower=new LossFollowEngine(store,venue,{source,now:()=>now});
-  const order=(target,k,status)=>{
+  const order=(target,k,status,direction='UP')=>{
     const id=target===store?'own'+k:'source'+k;
-    const value={id,round:k,end:k+300,mode:'paper',session:target.account('paper').session,direction:'UP',status,shares:10,conditionId:'c'+k,oracleWindow:60,cost:5};
+    const value={id,round:k,end:k+300,mode:'paper',session:target.account('paper').session,direction,status,shares:10,conditionId:'c'+k,oracleWindow:60,cost:5};
     assert.equal(target.reserveOrder(value),true);
     return value;
   };
@@ -99,7 +99,7 @@ test('third provisional loss appears before rollover and gates an independent si
   market(round+300);
   await follower.start('paper');
   await follower.attempt('paper');
-  assert.equal(store.orderForRound('paper',round+300)?.strategyVersion,'LF-003');
+  assert.equal(store.orderForRound('paper',round+300)?.strategyVersion,'LF-004');
   assert.equal(store.orderForRound('paper',round+300)?.direction,'DOWN');
   assert.equal(sourceStore.orderCount('paper'),4);
   assert.equal(sourceStore.account('paper').balance,1000);
@@ -137,16 +137,19 @@ test('official correction invalidates a provisional armed cycle before its first
   assert.equal(follower.signal(round+300).code,'LOSS_FOLLOW_WAIT');
 });
 
-test('LF-003 retains the 5, 15, 35, 75 sequence when market outcomes are mixed',async t=>{
+test('LF-004 retains the 5, 15, 35, 75 sequence when the loss markets are not all aligned',async t=>{
   const {source,sourceStore,store,follower,order,market,setNow}=fixture(t);
   follower.configure('paper',{...store.account('paper').config,baseAmount:5});
   for(const offset of [-900,-600,-300])order(sourceStore,round+offset,'lost');
   for(let i=0;i<4;i++){
     const start=round+i*300;setNow(start*1000+1000);market(start);
+    source.signal=()=>({direction:i===1?'UP':'DOWN',code:null,message:'source signal'});
+    follower.books.UP=follower.books.DOWN;
     if(i){
       const previous=store.orderForRound('paper',start-300);
-      const p={round:previous.round,conditionId:previous.conditionId,oracleWindow:60,open:100,close:101,
-        outcome:'UP',source:'polymarket_last_second',priceAt:start*1000-1000,observedAt:start*1000};
+      const down=previous.direction==='UP';
+      const p={round:previous.round,conditionId:previous.conditionId,oracleWindow:60,open:100,close:down?99:101,
+        outcome:down?'DOWN':'UP',source:'polymarket_last_second',priceAt:start*1000-1000,observedAt:start*1000};
       store.saveRoundPrediction(p);
       store.savePrediction({orderId:previous.id,...p,won:false});
     }
@@ -156,7 +159,7 @@ test('LF-003 retains the 5, 15, 35, 75 sequence when market outcomes are mixed',
     const current=store.orderForRound('paper',start);
     assert.equal(current.budget,[5,15,35,75][i]);
     assert.equal(current.cost,current.budget);
-    assert.equal(current.strategyVersion,'LF-003');
+    assert.equal(current.strategyVersion,'LF-004');
     assert.equal(stakeAmount(5,i,5),current.budget);
   }
   assert.equal(store.account('paper').balance,870);
@@ -170,7 +173,7 @@ test('LF-003 retains the 5, 15, 35, 75 sequence when market outcomes are mixed',
   assert.equal(source.nextAmount({...sourceStore.account('paper'),losses:1}),20);
 });
 
-test('LF-003 uses the increment for cap reset, risk budget, settled wins and restart',t=>{
+test('LF-004 uses the increment for cap reset, risk budget, settled wins and restart',t=>{
   const {source,store,follower}=fixture(t);
   const account={...store.account('paper'),losses:2,config:{...store.account('paper').config,baseAmount:5,maxAmount:34}};
   assert.equal(follower.nextAmount(follower.resetStakeCycle(account)),5);
@@ -187,37 +190,81 @@ test('LF-003 uses the increment for cap reset, risk budget, settled wins and res
   assert.equal(stakeAmount(2.25,2,5),24);
 });
 
-test('three adjacent DOWN losses followed by a first UP loss skip one round then resume at the next stake',async t=>{
-  const {source,sourceStore,store,follower,order,market,setNow}=fixture(t);
-  source.signal=()=>({direction:'UP',code:null,message:'source buys UP'});
+test('each follower loss in three consecutive DOWN markets skips one round and preserves the stake sequence',async t=>{
+  const {source,sourceStore,store,follower,order,market,final,setNow}=fixture(t);
   follower.configure('paper',{...store.account('paper').config,baseAmount:5});
-  for(const offset of [-900,-600,-300])order(sourceStore,round+offset,'lost');
+  order(sourceStore,round-1200,'lost','DOWN');
+  for(const offset of [-900,-600])order(sourceStore,round+offset,'lost');
+  // The immediately preceding market counts even though the source skipped it.
+  final(round-600);
   const open=start=>{
     setNow(start*1000+1000);market(start);
     follower.books.UP=follower.books.DOWN;
   };
-  open(round);
+  // An earlier blocked entry after the trigger is not the first filled order.
+  source.signal=()=>({direction:null,code:'PREVIOUS_REVERSE_COOLDOWN',message:'source skips'});
+  open(round-300);
   await follower.start('paper');await follower.attempt('paper');
+  assert.equal(store.entryBlock('paper',round-300).code,'PREVIOUS_REVERSE_COOLDOWN');
+  final(round-300);
+  open(round);
+  source.signal=()=>({direction:'UP',code:null,message:'source buys UP'});
+  await follower.attempt('paper');
   const first=store.orderForRound('paper',round);
   assert.equal(first.budget,5);
   assert.equal(first.direction,'UP');
   open(round+300);
-  const forecast={round,conditionId:first.conditionId,oracleWindow:60,open:100,close:99,
-    outcome:'DOWN',source:'polymarket_last_second',priceAt:(round+299)*1000,observedAt:(round+300)*1000};
-  store.saveRoundPrediction(forecast);
-  store.savePrediction({orderId:first.id,...forecast,won:false});
+  const predictLoss=order=>{
+    const forecast={round:order.round,conditionId:order.conditionId,oracleWindow:60,open:100,close:99,
+      outcome:'DOWN',source:'polymarket_last_second',priceAt:(order.end-1)*1000,observedAt:order.end*1000};
+    store.saveRoundPrediction(forecast);
+    store.savePrediction({orderId:order.id,...forecast,won:false});
+  };
+  predictLoss(first);
   await follower.attempt('paper');
-  assert.equal(store.entryBlock('paper',round+300).code,'LOSS_FOLLOW_FIRST_LOSS_COOLDOWN');
+  const cooldown='LOSS_FOLLOW_SAME_DIRECTION_LOSS_COOLDOWN';
+  assert.equal(store.entryBlock('paper',round+300).code,cooldown);
   assert.match(store.entryBlock('paper',round+300).message,/预计失利/);
+  assert.match(store.entryBlock('paper',round+300).message,/均收盘为 DOWN/);
   assert.equal(store.orderForRound('paper',round+300),null);
   assert.equal(store.account('paper').running,true);
+  const restored=new LossFollowEngine(store,follower.venue,{source,now:follower.now});
+  assert.equal(restored.signal(round+300).code,cooldown);
+  final(round+300);
   open(round+600);
   await follower.attempt('paper');
   const second=store.orderForRound('paper',round+600);
   assert.equal(second.budget,15);
-  store.saveOrder({...second,status:'lost'});
   open(round+900);
-  assert.equal(follower.signal(round+900).code,null);
+  predictLoss(second);
+  await follower.attempt('paper');
+  assert.equal(store.entryBlock('paper',round+900).code,cooldown);
+  assert.equal(store.orderForRound('paper',round+900),null);
+  final(round+900);
+  open(round+1200);
+  await follower.attempt('paper');
+  assert.equal(store.orderForRound('paper',round+1200).budget,35);
+});
+
+test('LF-004 only pauses for adjacent markets and uses official results over estimates',async t=>{
+  const {source,sourceStore,store,follower,order,final,setNow}=fixture(t);
+  source.signal=()=>({direction:'UP',code:null,message:'source buys UP'});
+  for(const offset of [-900,-600,-300])order(sourceStore,round+offset,'lost');
+  setNow(round*1000+1000);
+  await follower.start('paper');follower.arm(round);
+  const filled=order(store,round,'open');
+  for(const k of [round-300,round])sourceStore.saveRoundPrediction({round:k,conditionId:'c'+k,
+    open:100,close:99,oracleWindow:60,outcome:'DOWN',source:'polymarket_last_second',observedAt:(k+300)*1000});
+  setNow((round+300)*1000+1000);
+  final(round-900);
+  assert.equal(follower.signal(round+300).code,null);
+  final(round-600);
+  assert.equal(follower.signal(round+300).code,'LOSS_FOLLOW_SAME_DIRECTION_LOSS_COOLDOWN');
+  final(round-300,'UP');
+  assert.equal(follower.signal(round+300).code,null);
+  final(round-300);
+  store.saveOrder({...filled,status:'won'});
+  assert.equal(follower.signal(round+300).code,'LOSS_FOLLOW_WAIT');
 });
 
 test('cooldown requires three consecutive same-direction source markets and a same-direction first loss',()=>{

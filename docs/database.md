@@ -121,7 +121,7 @@ orders.entry_reason 为独立 TEXT 字段。订单占用时保存当次策略说
 
 共享图表回看窗口保存于 data/range.sqlite 的 chart_settings 单行表，level_lookback_minutes 默认 60、最短 15、按 5 分钟调整；middle_percent 保存中间蓝色区域占比，首次升级从旧图表边界比例换算，默认 60%，两项均不写入交易策略配置。
 
-三连亏跟随模拟使用独立 data/loss-follow.sqlite，新订单登记 LF-003，旧 LF-001 和 LF-002 保留；loss_follow_triggers 按本盘会话保存触发三场与检测时间，恢复跟随时结合本盘最新成交；首单前若来源官方结果推翻触发信号，则撤回触发。
+三连亏跟随模拟使用独立 `data/loss-follow.sqlite`，新订单登记 LF-004，旧订单沿用原版本。`loss_follow_triggers` 按本盘会话保存触发三场与检测时间；首单前若来源官方结果推翻触发信号，则撤回触发。LF-004 根据本盘上一场成交和相邻市场结果判断是否跳过当前场，沿用 `round_history`、`round_predictions` 和共享场次数据，拦截原因写入现有诊断和日志表。无需数据迁移。
 
 三连亏跟随实盘使用独立的 `data/loss-follow-live.sqlite`，复用标准订单、实时成交核对、`live_redemptions` 与 `loss_follow_triggers` 表。当前版本为 LF-003。模拟源账本只读，跟随触发、订单和风险参数在本盘独立保存。首次建库复制上场方向实盘的首笔和三个风控参数，以 LF-002 或 LF-003 注册记录标识已初始化。LF-003 利用已保存的触发场次和首笔成交判断跳过轮次，拦截原因写入现有诊断和日志表。
 

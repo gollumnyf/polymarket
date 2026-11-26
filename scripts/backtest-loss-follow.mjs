@@ -29,9 +29,16 @@ export function replayLossFollow(data,{config=data.followerConfig,scope='all',ti
     orderForRound:(_mode,round)=>byRound.has(round)?view(byRound.get(round)):null,
     historicalRound:round=>{
       const o=byRound.get(round);
-      return o&&now>=finalAt(o)?{status:o.status==='void'?'void':'resolved',result:o.finalDirection}:null;
+      if(o)return now>=finalAt(o)?{status:o.status==='void'?'void':'resolved',result:o.finalDirection}:null;
+      const market=data.marketHistory?.get(round);
+      return market&&now>=(timing==='final'?(round+300)*1000:market.updated_at)?market:null;
     },
-    roundPrediction:round=>byRound.has(round)?forecast(byRound.get(round)):null,
+    roundPrediction:round=>{
+      const o=byRound.get(round);
+      if(o)return forecast(o);
+      const saved=data.marketPredictions?.get(round);
+      return saved&&saved.observedAt<=now?saved:null;
+    },
   };
   const source={store:sourceStore,venue:{},lastSecondPrediction:round=>sourceStore.roundPrediction(round),
     signal:start=>({direction:byRound.get(start)?.direction??null,code:null,message:'历史来源成交机会'})};
@@ -142,7 +149,13 @@ function load(){
         book:b?{fetchedAt:b.fetched_at,tickSize:b.tick_size,minOrderSize:b.min_order_size,
           asks:levels.all(o.id).filter(l=>l.side==='ask').map(l=>({price:l.price,size:l.size})),bids:[]}:null};
     });
-    return {sourceSession:source.session,sourceConfig,followerConfig,orders};
+    const first=rows[0]?.round??0,last=rows.at(-1)?.round??0;
+    const marketHistory=new Map(db.prepare(`SELECT round,status,result,updated_at FROM round_history
+      WHERE round BETWEEN ? AND ? AND status IN ('resolved','void')`).all(first,last).map(row=>[row.round,row]));
+    const marketPredictions=new Map(db.prepare(`SELECT round,condition_id conditionId,open_price open,close_price close,
+      outcome,source,oracle_window oracleWindow,observed_at observedAt,price_at priceAt FROM round_predictions
+      WHERE round BETWEEN ? AND ?`).all(first,last).map(row=>[row.round,row]));
+    return {sourceSession:source.session,sourceConfig,followerConfig,orders,marketHistory,marketPredictions};
   }finally{db.close();follower.close();}
 }
 

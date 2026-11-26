@@ -191,7 +191,7 @@ function App() {
 
         {lossFollow&&state?.lossFollow&&<div className="data-warning"><Info size={16}/><span>
           来源：上场方向模拟 · 连续失利 {state.lossFollow.losses}/3
-          {state.lossFollow.cooldown?' · 首笔同向失利，本场跳过，下一场恢复':state.lossFollow.active?' · 跟随中':state.lossFollow.ready?' · 已有触发信号，下一场入场前复核':' · 等待触发'}
+          {state.lossFollow.cooldown?(lossFollowLive?' · 首笔同向失利，本场跳过，下一场恢复':' · 跟随单失利且连续三场同向，本场跳过') :state.lossFollow.active?' · 跟随中':state.lossFollow.ready?' · 已有触发信号，下一场入场前复核':' · 等待触发'}
           {state.lossFollow.samples[0]?.source==='polymarket_realtime'?' · 含本场实时预计':''}
           {state.lossFollow.ownResult==='won'?' · 本盘已有获胜信号，暂停跟随':''}
         </span></div>}
@@ -226,7 +226,7 @@ function App() {
     {toast && <div role="status" className={`toast ${toast.type}`}>{toast.type === 'success' ? <CheckCircle2 size={18}/> : <Info size={18}/>}<span>{toast.text}</span><button onClick={() => setToast(null)} aria-label="关闭提示"><X size={14}/></button></div>}
     {modal && <Modal onClose={() => setModal(null)} title={modal === 'settings' ? '策略参数' : modal === 'connection' ? '连接与数据源' : modal === 'guide' ? '交易规则与使用指南' : modal?.type === 'start' ? '启动实盘交易' : modal === 'reset' ? '重置模拟账户' : modal?.type==='clear-history' ? (modal.kind==='orders'?'清空模拟交易记录':'清空模拟运行日志') : '核对实盘订单'}>
       {modal === 'guide' && previousLive && <PreviousStrategySummary live={live}/>}
-      {modal === 'guide' && lossFollow && <div className="guide"><p>上场方向模拟连续失利三笔后，下一场复核触发依据，并沿用来源盘的买入方向、跳场规则和价格范围。</p><p>若来源三笔在连续同向的场次反买失利，且本轮首笔跟随也因同向延续而失利，跳过紧接的一场，随后恢复跟随。</p><p>跟随盘独立计算资金轮次。失利后的下一笔为上一笔 × 2 + 5 pUSD，获胜后恢复首笔并等待新一轮触发。</p>{lossFollowLive&&<p>使用真实钱包按盘口提交 FOK 订单，成交、结算和兑换在本盘核对。</p>}</div>}
+      {modal === 'guide' && lossFollow && <div className="guide"><p>上场方向模拟连续失利三笔后，下一场复核触发依据，并沿用来源盘的买入方向、跳场规则和价格范围。</p><p>{lossFollowLive?'若来源三笔在连续同向的场次反买失利，且本轮首笔跟随也因同向延续而失利，跳过紧接的一场，随后恢复跟随。':'每笔跟随成交失利后，若该场和紧邻的前两场收盘同向，就跳过下一场，再下一场恢复入场检查。前两场即使没有成交也计入。恢复后的每笔成交继续按同一规则判断。'}</p><p>跟随盘独立计算资金轮次。失利后的下一笔为上一笔 × 2 + 5 pUSD，获胜后恢复首笔并等待新一轮触发。</p>{lossFollowLive&&<p>使用真实钱包按盘口提交 FOK 订单，成交、结算和兑换在本盘核对。</p>}</div>}
       {modal === 'guide' && adaptive && <div className="guide"><p>RA-01 在开盘第 60 秒冻结方向，根据历史趋势效率与区间位置选择本场同向、趋势一致确认、连续同向反买；证据不足则空仓。</p><p>仅第 60–65 秒允许买入，使用第 60 秒后获取且不超过 3 秒的官方盘口，成交价不超过 0.50，遵守手续费、tick、份额、深度与原资金风控。每场最多买入一次。</p><p>原余额和马丁序列继续使用，旧持仓照常结算。固定 $6 对照观察与实际模拟账户独立，暂停对照不会暂停策略。实盘仍使用旧区间规则。</p><p>历史独立留出方向命中率 56.32%，不代表未来保证达到 55%，也不代表可成交胜率。</p></div>}
       {modal === 'guide' && rangeMode && !adaptive && <RangeGuide config={state?.rangeConfig} entryWindow={account?.config.entryWindow}/>}
       {modal === 'guide' && momentum && <div className="guide"><div className="guide-step"><b>01</b><div><h3>官方初始价与最新变动同向</h3><p>不设置开盘延迟。开盘后的新鲜官方价格高于本场官方初始价，且最新价高于前一笔官方价时买 UP；两项均下跌时买 DOWN。持平、方向冲突或数据不完整则继续等待，默认截止开盘后 299 秒。报价按本场预言机窗口读取，最近两笔均须在 6 秒内，时间必须递增；首个开盘后报价可以与紧邻开盘前的新鲜报价比较。</p></div></div><div className="guide-step"><b>02</b><div><h3>买价不超过 0.50，每场一次</h3><p>买入使用所选方向官方卖盘，价格必须大于 0、小于 1，且不超过 0.50；不使用买一价、概率或中间价代替可成交价格。遵守 tick、最小份额、滑点和真实深度，含手续费的预算必须能够完整成交。下单前再次核对两项方向。</p></div></div><div className="guide-step"><b>03</b><div><h3>独立马丁账户</h3><p>首笔金额在启动时保存。失利翻倍，任意一场获胜复位；单笔金额超限后从首笔开始新轮。按上一单预计结果继续资金序列，官方结算在后台入账。账户、配置、交易记录和日志独立保存；重启后保持暂停。</p></div></div></div>}

@@ -26,6 +26,12 @@ export const ACTIVE_LOSS_FOLLOW_VERSION=Object.freeze({
   rules:LOSS_FOLLOW_V2.rules+'若来源三笔失利对应三个紧邻且结果同向的市场，且本轮首笔跟随成交反买该方向也失利，仅跳过首笔成交后的紧邻一场。官方结果优先，未公布时使用同源预测。随后按原规则继续跟随及计算预算。'
 });
 
+export const ACTIVE_PAPER_LOSS_FOLLOW_VERSION=Object.freeze({
+  id:'LF-004',
+  name:'三连亏跟随 · 同向失利跳一场',
+  rules:LOSS_FOLLOW_V2.rules+'每笔跟随成交失利后，若失利场次与紧邻其前的两个市场收盘方向相同，则跳过紧接的一场。再下一场恢复原入场检查，资金序列延续；后续每笔成交按同一规则判断。前两场无需成交，官方结果优先，尚未结算时使用同源预测。'
+});
+
 export const LEVEL_LIMITED_VERSION=Object.freeze({
   id:'LP-001',
   name:'上场方向 · 超出支撑压力不下单',

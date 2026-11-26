@@ -1,6 +1,6 @@
 import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
 import {roundStart,ROUND_SECONDS,resetAtAmountLimit} from './strategy.mjs';
-import {ACTIVE_LOSS_FOLLOW_VERSION,LOSS_FOLLOW_V2} from './strategy-versions.mjs';
+import {ACTIVE_LOSS_FOLLOW_VERSION,ACTIVE_PAPER_LOSS_FOLLOW_VERSION,LOSS_FOLLOW_V2} from './strategy-versions.mjs';
 import {stakeAmount} from '../src/stake-amount.mjs';
 
 export class LossFollowEngine extends PreviousDirectionEngine {
@@ -13,7 +13,7 @@ export class LossFollowEngine extends PreviousDirectionEngine {
       PRIMARY KEY(session,source_round)
     )`);
     store.transaction(()=>{
-      const version=ACTIVE_LOSS_FOLLOW_VERSION;
+      const version=mode==='paper'?ACTIVE_PAPER_LOSS_FOLLOW_VERSION:ACTIVE_LOSS_FOLLOW_VERSION;
       const initialized=store.db.prepare('SELECT 1 FROM strategy_versions WHERE id IN (?,?) LIMIT 1')
         .get(version.id,LOSS_FOLLOW_V2.id);
       if(mode==='live'&&initialConfig&&!initialized){
@@ -90,10 +90,31 @@ export class LossFollowEngine extends PreviousDirectionEngine {
       round:start,
     };
   }
+  paperFollowEvidence(order,now){
+    const evidence=this.evidence(this,order,now);
+    if(evidence.source==='official')return evidence;
+    if(now<(order.end??order.round+ROUND_SECONDS)*1000)return evidence;
+    const market=this.marketResult(order.round);
+    if(market.source==='official_void')return {result:'void',source:'official'};
+    if(market.direction)return {result:market.direction===order.direction?'won':'lost',source:market.source};
+    return evidence;
+  }
+  repeatedLossCooldown(start,now,order,evidence){
+    if(!order||order.round!==start-ROUND_SECONDS||now<start*1000||evidence?.result!=='lost')return null;
+    const direction=order.direction==='UP'?'DOWN':'UP';
+    const previous=order.round-ROUND_SECONDS,older=previous-ROUND_SECONDS;
+    if(this.marketResult(previous).direction!==direction||this.marketResult(older).direction!==direction)return null;
+    return {
+      code:'LOSS_FOLLOW_SAME_DIRECTION_LOSS_COOLDOWN',
+      message:`跟随单 #${order.round} 买 ${order.direction}${evidence.source==='official'?'已确认':'预计'}失利。该场与紧邻的 #${older}、#${previous} 均收盘为 ${direction}，本场跳过，下一场恢复入场检查`,
+      round:start,
+    };
+  }
   monitor(start,now=this.now(),preview=false){
     const own=this.store.account(this.mode),from=this.source.store.account('paper');
     const latest=this.store.recentFilledOrders(this.mode,own.session,1,{ignoreVoid:true})[0];
-    const latestResult=latest?this.evidence(this,latest,now):null;
+    const repeatCooldown=this.strategyVersion===ACTIVE_PAPER_LOSS_FOLLOW_VERSION.id;
+    const latestResult=!latest?null:repeatCooldown?this.paperFollowEvidence(latest,now):this.evidence(this,latest,now);
     const ownWon=latestResult?.result==='won';
     const trigger=this.store.db.prepare('SELECT * FROM loss_follow_triggers WHERE session=? ORDER BY source_round DESC LIMIT 1').get(own.session);
     let armed=!!trigger&&(!ownWon||trigger.source_round>latest.round);
@@ -112,7 +133,9 @@ export class LossFollowEngine extends PreviousDirectionEngine {
     let losses=0;
     const samples=recent.map(order=>({round:order.round,...this.evidence(this.source,order,now)}));
     for(const sample of samples){if(sample.result!=='lost')break;losses++;}
-    const cooldown=active?this.firstLossCooldown(start,now,own.session,trigger):null;
+    const cooldown=!active?null:repeatCooldown
+      ?this.repeatedLossCooldown(start,now,latest,latestResult)
+      :this.firstLossCooldown(start,now,own.session,trigger);
     return {active,losses,ready:active||losses>=3,samples,ownResult:latestResult?.result??null,cooldown,
       armed,activeFrom:active?(armed?trigger.source_round:latest.round):null};
   }
