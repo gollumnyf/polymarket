@@ -3,7 +3,7 @@ import { Activity, ArrowUpRight, BarChart3, Layers3, Settings2, Zap } from 'luci
 import {PAGES} from './pages.mjs';
 
 const icons={previous:Layers3,'loss-follow':Activity,
-  'previous-live':Zap,'loss-follow-live':Zap,reports:BarChart3,'live-reports':BarChart3};
+  'previous-live':Zap,'loss-follow-live':Zap,reports:BarChart3,'reports-live':BarChart3};
 
 export default function Sidebar({ active, onNavigate, onConnection }) {
   const navigate = onNavigate || (page => location.assign('/' + page));
@@ -11,7 +11,7 @@ export default function Sidebar({ active, onNavigate, onConnection }) {
     <a href="/previous" className="brand" onClick={event => { event.preventDefault(); navigate('previous'); }}><span className="brand-icon"><Activity size={24} /></span>pulse<span className="brand-dot">.</span><span className="beta">TERMINAL</span></a>
     <div className="sidebar-menu">
     <div className="nav-label">交易工作台</div>
-    <nav>{PAGES.map(({id:page,title:label}) => {const Icon=icons[page];return <button key={page} data-page-id={page} title={`${label} · ${page}`} className={'nav-item nav-item-caption' + (active === page ? ' selected' : '')} onClick={() => navigate(page)} aria-current={active === page ? 'page' : undefined}><Icon size={18} /><span className="nav-text"><span>{label}</span><small>{page}</small></span>{page.endsWith('-live') && <span className="nav-tag">LIVE</span>}</button>;})}</nav>
+    <nav>{PAGES.map(({id:page,title:label}) => {const Icon=icons[page];return <button key={page} data-page-id={page} title={`${label} · ${page}`} className={'nav-item nav-item-caption' + (active === page ? ' selected' : '')} onClick={() => navigate(page)} aria-current={active === page ? 'page' : undefined}><Icon size={18} /><span className="nav-text"><span>{label}</span><small>{page}</small></span>{['previous-live','loss-follow-live','reports-live'].includes(page) && <span className="nav-tag">LIVE</span>}</button>;})}</nav>
     </div>
     <div className="sidebar-bottom"><div className="market-note"><span className="mini-label">BUILT FOR</span><div><span className="poly-logo">◆</span> Polymarket <ArrowUpRight size={15} /></div><p>把交易交给规则<br />把决策留给自己。</p></div>{onConnection && <button className="profile" onClick={onConnection}><span className="avatar">P</span><span>本地交易账户<small>{active==='live'||active?.endsWith('-live') ? '实盘交易' : '模拟交易'}</small></span><Settings2 size={16} /></button>}</div>
   </aside>;

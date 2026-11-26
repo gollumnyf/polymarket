@@ -253,4 +253,11 @@ function Reconcile({ order, busy, onSave }) {
   return <form onSubmit={e => { e.preventDefault(); onSave(id); }}><p className="modal-copy">请先到 Polymarket 核对这一场的真实订单，再粘贴完整订单 ID。系统只会读取该订单的官方成交记录，不会重发买单。</p><label className="reconcile-label">平台订单 ID<input value={id} onChange={e => setId(e.target.value)} required placeholder="0x…" pattern="0x[0-9a-fA-F]{64}"/></label><button className="button primary" disabled={busy}><RefreshCw size={16}/>保存并核对成交</button></form>;
 }
 
-createRoot(document.getElementById('root')).render(location.pathname.startsWith('/live-reports')?<ReportsPage live/>:location.pathname.startsWith('/reports')?<ReportsPage/>:<App/>);
+const pageId=location.pathname.split('/')[1];
+if(pageId==='live-reports'){
+  location.replace(PAGE_BY_ID['reports-live'].path+location.search+location.hash);
+}else{
+  createRoot(document.getElementById('root')).render(
+    pageId==='reports-live'?<ReportsPage live/>:pageId==='reports'?<ReportsPage/>:<App/>
+  );
+}

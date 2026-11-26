@@ -96,7 +96,7 @@ export async function runConsole(base,{answers,ensure=ensureService,stop=stopSer
     if(action==='0'){write('已关闭控制台，后台服务继续运行。需要停止时请双击“停止服务.bat”。');return;}
     try{
       if(action==='3'){write('正在暂停策略并停止服务，请稍候…');write(stoppedMessage(await stop(base)));return;}
-      if(['1','2','5','6'].includes(action))await open(`${base}/${action==='1'?'previous':action==='2'?'previous-live':action==='5'?'live-reports':'reports'}`);
+      if(['1','2','5','6'].includes(action))await open(`${base}/${action==='1'?'previous':action==='2'?'previous-live':action==='5'?'reports-live':'reports'}`);
       else if(action==='4')await connect();
       else write('请输入 1、2、3、4、5、6 或 0。');
     }catch(error){write(error.message);}

@@ -12,7 +12,7 @@
 | 三连亏跟随模拟 | [/loss-follow](http://127.0.0.1:3100/loss-follow) | LF-003：上场方向模拟连亏三笔后跟随；独立资金，失利后上一笔 × 2 + 5，首笔5时为5、15、35、75；获胜恢复首笔并重新待命 |
 | 上场方向实盘 | [/previous-live](http://127.0.0.1:3100/previous-live) | 同一择向与马丁规则，独立订单及资金序列，默认暂停 |
 | 三连亏跟随实盘 | [/loss-follow-live](http://127.0.0.1:3100/loss-follow-live) | 同模拟版 LF-003，以上场方向模拟为信号源。首次复制上场方向实盘的首笔及风控参数，独立账本，默认暂停 |
-| 实盘报表 | [/live-reports](http://127.0.0.1:3100/live-reports) | 分别统计上场方向实盘与三连亏跟随实盘的订单 |
+| 实盘报表 | [/reports-live](http://127.0.0.1:3100/reports-live) | 分别统计上场方向实盘与三连亏跟随实盘的订单 |
 | 模拟盘报表 | [/reports](http://127.0.0.1:3100/reports) | 按「上场方向模拟」「三连亏跟随」标签分别查看日历、每日明细和区间汇总，切换时保留日期筛选 |
 
 连续两场同向后，模拟盘和实盘都跳过紧接的一场，再恢复反向入场检查。若行情持续同向，继续逐场检查反买，同一段走势不再重复跳过。按市场结果连续计数，成交与否不改变节奏；方向反转、作废或缺失会打断计数。
@@ -64,6 +64,8 @@ npm.cmd install
 npm.cmd run dev
 ```
 
+开发模式下，保存页面引用的 `src/*.mjs`、JSX 或 CSS 会自动更新已打开的页面。Vite 刷新连接与页面使用同一个端口，切换到开发模式后先刷新一次当前标签页。保存 `server/*.mjs` 后需重启 Node.js 服务。启动批处理会沿用正在运行的实例及其模式。
+
 - 上场方向实盘：<http://127.0.0.1:3100/previous-live>
 
 Windows PowerShell 可能禁止执行 `npm.ps1`，使用 `npm.cmd` 即可，不需要修改系统执行策略。
@@ -74,7 +76,7 @@ Windows PowerShell 可能禁止执行 `npm.ps1`，使用 `npm.cmd` 即可，不�
 Copy-Item .env.example .env
 ```
 
-生产构建：
+生产模式提供构建后的静态文件。前端修改后重新构建并刷新页面：
 
 ```powershell
 npm.cmd run build
@@ -87,7 +89,7 @@ npm.cmd start
 
 市场或盘口偶发 `fetch failed` 时会自动重试：关键只读查询2500毫秒超时、禁用SDK内部长重试，失败后下一次交易检查继续；多个盘并发的相同读取合并，减少重复流量。HTTP429遵守服务端冷却，错误显示具体Gamma/CLOB阶段及网络代码。连接未恢复时仍禁止使用过期盘口下单，真实订单提交不参与此重试机制。详见 [官方接口恢复](docs/MARKET_CONNECTIVITY.md)。
 
-菜单中文名称下方显示固定英文ID：`previous`、`loss-follow`、`previous-live`、`loss-follow-live`、`reports`、`live-reports`。后续跨页面关联以ID为准，中文更名不改变ID、路径或账本。统一定义见 `src/pages.mjs`。「震荡区间」指下支撑位至上压力位的完整区间（含两端）。
+菜单中文名称下方显示固定英文ID：`previous`、`loss-follow`、`previous-live`、`loss-follow-live`、`reports`、`reports-live`。后续跨页面关联以ID为准，中文更名不改变ID、路径或账本。统一定义见 `src/pages.mjs`。「震荡区间」指下支撑位至上压力位的完整区间（含两端）。
 
 侧栏仅保留交易页面与报表菜单，已移除「工具与资源」及其子项。各页面的策略参数从右侧「高级参数与风险限额」进入，顶栏帮助按钮可查看使用说明。
 

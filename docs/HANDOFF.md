@@ -20,7 +20,7 @@
 | 上场方向实盘 | /previous-live | data/previous-direction-live.sqlite |
 | 模拟盘报表 | /reports | 按标签分别读取 previous-direction.sqlite、loss-follow.sqlite |
 | 三连亏跟随实盘 | /loss-follow-live | data/loss-follow-live.sqlite |
-| 实盘报表 | /live-reports | 标签分别读取 previous-direction-live.sqlite 和 loss-follow-live.sqlite |
+| 实盘报表 | /reports-live | 标签分别读取 previous-direction-live.sqlite 和 loss-follow-live.sqlite |
 
 页面 API 在 /previous/api、/loss-follow/api、/previous-live/api 和 /loss-follow-live/api 下，按 paper、live 分开。跟单观察盘、区间突破交易、行情领先与配对、GAM 已下线；旧数据库按归档保留。/range 和 /live 页面分别引导到当前模拟、实盘页面，旧交易接口不再启用。旧区间规则见 [归档](research/legacy-range-rules.md)。
 
@@ -57,7 +57,7 @@
 ## 页面与数据
 
 - 侧栏分为顶部Logo、中间 `.sidebar-menu`、底部 `.sidebar-bottom`：Logo和BUILT FOR/账户区域不参与滚动，中间菜单独立滚动；窄屏沿用图标菜单模式。已移除「我的交易空间」模块及失效样式。仅改变布局，不影响页面ID、配置、策略或下单。
-- 页面名称与固定英文唯一标识集中定义于 `src/pages.mjs`，侧栏每个页面菜单的中文名下方显示其ID，菜单DOM同时提供 `data-page-id`。`previous`＝上场方向模拟，`loss-follow`＝三连亏跟随模拟，`previous-live`＝上场方向实盘，`loss-follow-live`＝三连亏跟随实盘，`reports`＝模拟盘报表，`live-reports`＝实盘报表。ID与现有路由同名，后续跨页面关联以ID为准，不依赖可变中文名称；本次更名不迁移API、数据库或历史订单。小屏收起文字时可通过菜单悬停标题识别ID。侧栏已移除「工具与资源」分组及其「策略设置」「使用指南」菜单；各页面通过右侧策略控制的「高级参数与风险限额」进入本页设置，使用帮助保留在顶栏。配置仍归属各自页面及账本。
+- 页面名称与固定英文唯一标识集中定义于 `src/pages.mjs`，侧栏每个页面菜单的中文名下方显示其ID，菜单DOM同时提供 `data-page-id`。`previous`＝上场方向模拟，`loss-follow`＝三连亏跟随模拟，`previous-live`＝上场方向实盘，`loss-follow-live`＝三连亏跟随实盘，`reports`＝模拟盘报表，`reports-live`＝实盘报表。ID与现有路由同名，后续跨页面关联以ID为准，不依赖可变中文名称；本次更名不迁移API、数据库或历史订单。小屏收起文字时可通过菜单悬停标题识别ID。侧栏已移除「工具与资源」分组及其「策略设置」「使用指南」菜单；各页面通过右侧策略控制的「高级参数与风险限额」进入本页设置，使用帮助保留在顶栏。配置仍归属各自页面及账本。
 - 术语「震荡区间」统一指下支撑位至上压力位的完整区间（含两端），中间蓝色区域是其中一个子区域。
 
 - 模拟盘、实盘和区间参考后台复用同一条 Polymarket Chainlink WebSocket；各行情消费者独立读取报价增量，交易状态、配置、订单和账本继续分开。前端通过本盘 `/api/events?chart=1` 的一条 SSE 同时接收状态及具名的 `chart-prices/history/opening/range` 事件；行情生产独立于策略快照，先回放共享行情库与内存近31分钟报价、官方target及区间，不等待策略轮询或进入下单等待链。`server/ui-stream.mjs` 共用发送及清理逻辑，旧 `/api/events` 及 `/api/chart-events` 保留兼容。
@@ -70,9 +70,12 @@
 - 模拟/实盘报表各自显示日历与区间汇总，默认近 30 天，按北京时间 00:00 切日。模拟报表提供「上场方向模拟」「三连亏跟随」标签，分别读取 `/previous/api/paper/report`、`/loss-follow/api/paper/report`；切换标签保留日期筛选、月份及选中日，取消旧请求，并按接口与日期校验返回数据，避免独立账本串显。日历、每日明细和汇总均属于当前标签。支出、下单量和买入手续费按下单日；已实现盈亏、胜负按结算日。实盘报表可切换两盘，分别读取 `/previous-live/api/live/report` 和 `/loss-follow-live/api/live/report`。报表读取包括隐藏的历史订单。
 - SQLite 以场次开盘 Unix 秒为键；采样和事件时间为 Unix 毫秒。金额用 pUSD，盘口份额价格小于 1。明细表和迁移规则见 [数据库文档](database.md)。
 
+- `/live-reports` 为旧实盘报表地址，页面加载后跳转到 `/reports-live`，保留查询参数和页内锚点。
+
 ## 运行与维护
 
 - 安装依赖：npm ci；开发模式：npm run dev；生产模式：npm run build，然后 npm start。Windows 日常使用仓库启动/停止批处理，后台日志在 data/server-out.log 和 data/server-error.log。
+- 开发模式由 Express 同一个本机端口承载页面、API 和 Vite 刷新 WebSocket。保存页面引用的 `src/*.mjs`、JSX 或 CSS，浏览器收到相应的热更新或刷新。SQLite 和运行日志目录排除在 Vite 文件监视与静态文件访问之外。修改 `server/*.mjs` 后由维护者选择合适时机重启服务。生产模式提供已构建的 `dist`，前端变动需重新构建。启动批处理检测到已有服务时沿用其模式。
 - 校验：npm run check、npm test、npm run build。执行规则的测试用固定时间和假的交易所接口；验证不得提交真实订单或启动实盘。
 - 修改运行中的服务前先核对实盘状态。未要求暂停正在运行的实盘时不要为了部署而中断；服务重启后不自动恢复实盘。数据库、私钥、API 凭据不进入 Git 和日志输出。
 - 复用现有组件与 ESM 风格。历史订单原因和原始证据不得用现在的策略重写。避免为轻量修改引入新框架。上场方向的规则变化必须先在 server/strategy-versions.mjs 追加不可改写的版本记录，再切换启用版本；只调整参数时沿用策略版本，由 config_id 区分。模拟和实盘均在下单占用时写入策略版本，结算不改写。

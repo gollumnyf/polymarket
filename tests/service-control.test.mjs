@@ -85,7 +85,7 @@ test('console remains usable after startup failure and can stop the subsequently
 test('console exit preserves an existing running strategy and does not stop the service',async t=>{
   const {base,store,engine,calls}=await fixture(t);await engine.start('paper');const opened=[];
   await runConsole(base,{answers:['2','5','0'],ensure:readService,open:async url=>opened.push(url),write:()=>{}});
-  assert.deepEqual(opened,[`${base}/previous`,`${base}/previous-live`,`${base}/live-reports`]);assert.equal(calls(),0);
+  assert.deepEqual(opened,[`${base}/previous`,`${base}/previous-live`,`${base}/reports-live`]);assert.equal(calls(),0);
   assert.equal(store.account('paper').running,true);assert.ok(await readService(base));
 });
 

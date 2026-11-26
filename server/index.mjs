@@ -1,5 +1,6 @@
 import {RangeAdaptiveEngine} from './range-adaptive-engine.mjs';
 import express from 'express';
+import {createServer as createHttpServer} from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -262,17 +263,22 @@ async function main() {
   app.get(['/range','/range/'],(_req,res)=>res.redirect('/previous'));
   app.use('/range',(_req,res)=>res.status(410).json({error:'区间突破模拟已移除，请使用上场方向模拟'}));
   const production = process.argv.includes('--production');
+  const server = createHttpServer(app);
   let vite;
   if (production) {
     app.use(express.static(resolve(root, 'dist')));
     app.use((req, res) => res.sendFile(resolve(root, 'dist/index.html')));
   } else {
     const { createServer } = await import('vite');
-    vite = await createServer({ root, server: { middlewareMode: true }, appType: 'spa' });
+    vite = await createServer({
+      root,
+      server: {middlewareMode:true,hmr:{server}},
+      appType:'spa',
+    });
     app.use(vite.middlewares);
   }
   const port = Number(process.env.PORT || 3100);
-  const server = app.listen(port, '127.0.0.1', () => {
+  server.listen(port, '127.0.0.1', () => {
     console.log(`Pulse BTC 5M · http://127.0.0.1:${port}`);
     console.log('上场方向模拟盘 /previous · 买入价格可配置 · 策略默认暂停');
     console.log('上场方向实盘 /previous-live · 策略默认暂停');
