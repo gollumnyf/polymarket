@@ -16,11 +16,10 @@ import {RangeStore} from './range-store.mjs';
 import {Store} from './store.mjs';
 import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
 import {LossFollowEngine} from './loss-follow-engine.mjs';
-import {LevelLimitedStore,LevelLimitedEngine,independentLevelRange} from './level-limited-engine.mjs';
 import {tradingReport} from './reports.mjs';
 import {serveUiStream} from './ui-stream.mjs';
 
-export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,previousLiveEngine=null,lossFollowEngine=null,lossFollowLiveEngine=null,levelLimitedEngine=null,adaptiveObserver=null,allowedModes=['paper','live'],legacyRangeLiveRetired=false,chart=null } = {}) {
+export function createApp(engine, { history = new RoundHistory(engine.venue, { store: engine.store }),onShutdown=null,rangeEngine=null,previousEngine=null,previousLiveEngine=null,lossFollowEngine=null,lossFollowLiveEngine=null,adaptiveObserver=null,allowedModes=['paper','live'],legacyRangeLiveRetired=false,chart=null } = {}) {
   const app = express();
   app.disable('x-powered-by');
   if(rangeEngine)app.use('/range',createApp(rangeEngine,{onShutdown,adaptiveObserver,allowedModes:['paper'],chart}));
@@ -28,10 +27,10 @@ export function createApp(engine, { history = new RoundHistory(engine.venue, { s
   if(previousLiveEngine)app.use('/previous-live',createApp(previousLiveEngine,{history:previousLiveEngine.history,onShutdown,allowedModes:['live'],chart}));
   if(lossFollowEngine)app.use('/loss-follow',createApp(lossFollowEngine,{history:lossFollowEngine.history,onShutdown,allowedModes:['paper'],chart}));
   if(lossFollowLiveEngine)app.use('/loss-follow-live',createApp(lossFollowLiveEngine,{history:lossFollowLiveEngine.history,onShutdown,allowedModes:['live'],chart}));
-  if(levelLimitedEngine)app.use('/level-limited',createApp(levelLimitedEngine,{history:levelLimitedEngine.history,onShutdown,allowedModes:['paper'],chart:{...chart,range:levelLimitedEngine.levels}}));
   app.use('/gam',(req,res)=>res.status(410).json({error:'GAM 均值方差模块已移除'}));
   app.use('/lead',(req,res)=>res.status(410).json({error:'行情领先与配对模块已移除'}));
   app.use('/bollinger',(_req,res)=>res.status(410).json({error:'布林模拟已下线，历史数据库已保留'}));
+  app.use('/level-limited',(_req,res)=>res.status(410).json({error:'上场方向震荡区间模拟已下线，历史数据库已保留'}));
   const token = randomBytes(32).toString('hex');
   const service={name:'polymarket-btc-console',root:resolve(fileURLToPath(new URL('../',import.meta.url))),pid:process.pid,instanceId:randomBytes(12).toString('hex'),shutdownEnabled:typeof onShutdown==='function'};
   app.use((req, res, next) => {
@@ -243,14 +242,7 @@ async function main() {
   const redemptionWorkers=[previousLiveEngine.redemption,lossFollowLiveEngine.redemption];
   redemptionWorkers[0].peer=redemptionWorkers[1];
   redemptionWorkers[1].peer=redemptionWorkers[0];
-  const levelLimitedStore=new LevelLimitedStore(resolve(root,'data/previous-level-limited.sqlite'),{
-    sourceConfig:previousStore.account('paper').config,chartSettings:rangeStore.chartSettings(),levelLagMinutes:rangeStore.rangeConfig().levelLagMinutes});
-  const limitedRange=independentLevelRange(levelLimitedStore,rangeStore,priceFeed);
-  const levelLimitedEngine=new LevelLimitedEngine(levelLimitedStore,new Polymarket({priceFeed,officialOpeningOnly:true,deferOpeningPrice:true}),
-    {marketStore:rangeStore,previousMarketStore:previousStore,levels:limitedRange});
-  rangeEngine.extraLevelHistoryStart=()=>Math.floor(Date.now()/300000)*300-
-    (levelLimitedStore.chartSettings().levelLookbackMinutes+levelLimitedStore.levelLagMinutes())*60;
-  const tradingEngines=[previousLiveEngine,lossFollowLiveEngine,previousEngine,lossFollowEngine,levelLimitedEngine];
+  const tradingEngines=[previousLiveEngine,lossFollowLiveEngine,previousEngine,lossFollowEngine];
   let closing=false;
   const chartOpening=new ChartOpening({onSpec:(spec,round)=>{if(!closing)priceFeed.connect(spec,round);}});
   const chartRange=new ChartRange(rangeEngine,priceFeed);
@@ -262,7 +254,7 @@ async function main() {
     engine.canRunBackground=canRunBackground;
     if(engine.history)engine.history.canRefresh=canRunBackground;
   }
-  const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,lossFollowEngine,lossFollowLiveEngine,levelLimitedEngine,allowedModes:[],legacyRangeLiveRetired:true,chart:{feed:priceFeed,opening:chartOpening,range:chartRange,store:rangeStore}});
+  const app = createApp(previousEngine,{onShutdown:close,previousEngine,previousLiveEngine,lossFollowEngine,lossFollowLiveEngine,allowedModes:[],legacyRangeLiveRetired:true,chart:{feed:priceFeed,opening:chartOpening,range:chartRange,store:rangeStore}});
   app.get(['/','/paper','/momentum','/momentum/'],(_req,res)=>res.redirect('/previous'));
   app.use('/copy',(_req,res)=>res.status(410).json({error:'跟单观察盘已移除'}));
   app.get(['/live','/live/'],(_req,res)=>res.redirect('/previous-live'));
@@ -304,7 +296,6 @@ async function main() {
         if(priceFeed.spec)priceFeed.connect(priceFeed.spec,priceFeed.round);
       }
       chartRange.poll(canRunBackground());
-      limitedRange.poll(canRunBackground());
     }catch(error){console.error(safeError(error));}
   },1000);
   const redemptionTimer=setInterval(()=>{
@@ -323,7 +314,7 @@ async function main() {
     const deadline = Date.now() + 25000;
     while ((engines.some(current=>current.history?.inflight||current.busy||current.entryBusy||current.spotTask||current.displayBalanceTask||current.marketPrefetchTask||current.voteTask||current.backfillTask||current.settlementTask||current.redemption?.task||current.roundPredictionTasks.size)) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
     priceFeed.close();
-    for(const ledger of [store,previousStore,previousLiveStore,lossFollowStore,lossFollowLiveStore,levelLimitedStore,rangeStore])ledger.close();
+    for(const ledger of [store,previousStore,previousLiveStore,lossFollowStore,lossFollowLiveStore,rangeStore])ledger.close();
     process.exit(0);
   }
   process.on('SIGINT', close); process.on('SIGTERM', close);

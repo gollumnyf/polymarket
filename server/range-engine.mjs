@@ -14,7 +14,7 @@ export class RangeEngine extends MomentumEngine {
   backfillMarketHistory(){
     if(this.closing||!this.venue.fetch||!Number.isFinite(this.spot?.windowSeconds))return this.backfillTask;
     const config=this.store.rangeConfig(),window=this.spot.windowSeconds,end=roundStart(this.now());
-    const state=this.store.rangeState(),start=Math.min(levelWindow(this.now(),Math.max(config.levelLookbackHours,(this.store.chartSettings?.().levelLookbackMinutes??0)/60),config.levelLagMinutes).start/1000,end-config.lookbackHours*3600,end-(config.streakReverseEnabled?config.streakReverseRounds:0)*300,state?.breakoutPendingDirection&&!state.breakoutConfirmedAt?state.breakoutStartRound??end:end,state?.boundaryPauseSide?Math.max(state.boundaryPauseRound??end,end-config.resumeRounds*300):end,this.extraLevelHistoryStart?.()??end);
+    const state=this.store.rangeState(),start=Math.min(levelWindow(this.now(),Math.max(config.levelLookbackHours,(this.store.chartSettings?.().levelLookbackMinutes??0)/60),config.levelLagMinutes).start/1000,end-config.lookbackHours*3600,end-(config.streakReverseEnabled?config.streakReverseRounds:0)*300,state?.breakoutPendingDirection&&!state.breakoutConfirmedAt?state.breakoutStartRound??end:end,state?.boundaryPauseSide?Math.max(state.boundaryPauseRound??end,end-config.resumeRounds*300):end);
     const known=new Set(this.store.marketPrices(window,start,end).map(item=>item.round));
     for(let round=end-300;round>=start;round-=300){
       const key=window+':'+round;

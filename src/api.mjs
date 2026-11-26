@@ -1,7 +1,7 @@
 // Read the committed state before reporting success. A settings save must update
 // every derived amount even when the SSE message arrives late or is disconnected.
 export function apiPath(path,pathname=globalThis.location?.pathname||'/paper'){
-  const routes=['level-limited','loss-follow-live','loss-follow','previous-live','previous','range','momentum'];
+  const routes=['loss-follow-live','loss-follow','previous-live','previous','range','momentum'];
   const page=pathname.split('/')[1];
   const prefix=routes.includes(page)?'/'+page:'';
   return `${prefix}/api/${path}`;

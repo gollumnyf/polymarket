@@ -201,28 +201,6 @@ export class Polymarket {
     }
     return books;
   }
-  async preparePriceFeed(start,isCurrent=()=>true){
-    if(!isCurrent()||roundStart(this.now())!==start)return null;
-    const slug=`btc-updown-5m-${start}`,query=new URLSearchParams({slug,limit:'1'});
-    const events=await this.readPublic(`oracle:${start}`,`Gamma BTC预言机配置 #${start}`,async options=>{
-      const response=await this.fetch(`https://gamma-api.polymarket.com/events?${query}`,{signal:options.signal});
-      if(!response.ok){
-        const error=Error(`HTTP ${response.status}`);
-        if(response.status===429){
-          const value=response.headers?.get('retry-after'),seconds=Number(value);
-          error.name='RateLimitError';error.retryAfter=Number.isFinite(seconds)?seconds:(Date.parse(value)-Date.now())/1000;
-        }
-        throw error;
-      }
-      return response.json();
-    });
-    if(!isCurrent()||roundStart(this.now())!==start)return null;
-    const event=Array.isArray(events)?events.find(event=>event.slug===slug):null;
-    const market=event?.markets?.find(market=>market.slug===slug);
-    const spec=oracleSpec(market?.cryptoMarketConfig);
-    if(this.priceFeed.connect(spec,start)===false)throw Error('官方价格流已进入更新场次或本场预言机口径不一致');
-    return spec;
-  }
   async spot() {
     const start = roundStart(this.now());
     if (this.references?.round !== start || (this.references.currentOpen == null && this.now() - this.references.updatedAt >= (this.officialOpeningOnly?1000:30000))) {

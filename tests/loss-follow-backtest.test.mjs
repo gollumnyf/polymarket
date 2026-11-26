@@ -32,18 +32,20 @@ test('independent Martingale resets at the cap and cannot treat a winning trade 
   assert.deepEqual(capped.ledger.map(t=>t.budget),[10,20,40,10]);assert.equal(capped.pnl,-60);
 });
 
-test('LF-002 replay uses the new increment for both quotes and capital limits',()=>{
-  const d=data(['lost','lost','lost','lost','lost','lost','won']);
+test('LF-003 replay retains the increment for both quotes and capital limits',()=>{
+  const d=data(['lost','lost','lost','lost','lost','lost','lost','won']);
   const r=replayLossFollow(d,{config:{...d.followerConfig,baseAmount:5}});
-  assert.equal(r.strategyVersion,'LF-002');
+  assert.equal(r.strategyVersion,'LF-003');
   assert.deepEqual(r.ledger.map(t=>t.budget),[5,15,35,75]);
+  assert.deepEqual(r.ledger.map(t=>(t.round-1800000000)/300),[3,5,6,7]);
+  assert.equal(r.skipped.LOSS_FOLLOW_FIRST_LOSS_COOLDOWN,1);
   assert.equal(r.pnl,20);
   const capped=replayLossFollow(d,{config:{...d.followerConfig,baseAmount:5,maxAmount:34}});
   assert.deepEqual(capped.ledger.map(t=>t.budget),[5,15,5,15]);
 });
 
 test('replay respects real book depth instead of scaling historical profit linearly',()=>{
-  const d=data(['lost','lost','lost','lost','won']);
+  const d=data(['lost','lost','lost','lost','lost','won']);
   d.orders.at(-1).book.asks=[{price:.5,size:10}];
   const r=replayLossFollow(d);
   assert.equal(r.trades,1);assert.equal(r.pnl,-10);

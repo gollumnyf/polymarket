@@ -2,7 +2,7 @@ import React from 'react';
 import { Activity, ArrowUpRight, BarChart3, Layers3, Settings2, Zap } from 'lucide-react';
 import {PAGES} from './pages.mjs';
 
-const icons={previous:Layers3,'level-limited':Layers3,'loss-follow':Activity,
+const icons={previous:Layers3,'loss-follow':Activity,
   'previous-live':Zap,'loss-follow-live':Zap,reports:BarChart3,'live-reports':BarChart3};
 
 export default function Sidebar({ active, onNavigate, onConnection }) {

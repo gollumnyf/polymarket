@@ -13,38 +13,6 @@ test('market oracle configuration selects TWAP instead of silently using spot', 
   assert.throws(() => oracleSpec({ asset: 'btc', twapEnabled: true, twapLookbackSeconds: 120 }), /不支持/);
 });
 
-test('entry-only oracle discovery advances the shared stream without waiting for target or fresh() display work',async()=>{
-  const now=1800000001000,start=roundStart(now),calls=[];
-  const feed={round:start-300,spec,connect(next,round){this.spec=next;this.round=round;return true;}};
-  const venue=new Polymarket({now:()=>now,priceFeed:feed,fetchImpl:async(url,options)=>{
-    calls.push(String(url));assert.ok(options.signal instanceof AbortSignal);
-    return {ok:true,json:async()=>[{slug:'btc-updown-5m-'+start,eventMetadata:{priceToBeat:null},
-      markets:[{slug:'btc-updown-5m-'+start,cryptoMarketConfig:{asset:'BTC',twapEnabled:true,twapLookbackSeconds:60}}]}]};
-  }});
-  assert.equal((await venue.preparePriceFeed(start)).seconds,60);
-  assert.equal(feed.round,start);assert.equal(calls.length,1);
-  assert.ok(calls[0].startsWith('https://gamma-api.polymarket.com/events?'));
-  assert.equal(venue.references,null); // No target, predictions or display state were awaited.
-});
-
-test('entry-only oracle discovery rejects mismatched markets and cannot activate after shutdown or rollover',async()=>{
-  let now=1800000001000,active=true,release;
-  const start=roundStart(now),connections=[];
-  const feed={connect:(...args)=>connections.push(args)};
-  const event={slug:'btc-updown-5m-'+start,markets:[{slug:'btc-updown-5m-'+start,
-    cryptoMarketConfig:{asset:'BTC',twapEnabled:true,twapLookbackSeconds:30}}]};
-  const venue=new Polymarket({now:()=>now,priceFeed:feed,fetchImpl:async()=>{
-    await new Promise(resolve=>{release=resolve;});return {ok:true,json:async()=>[event]};
-  }});
-  const pending=venue.preparePriceFeed(start,()=>active);await Promise.resolve();active=false;release();
-  assert.equal(await pending,null);assert.equal(connections.length,0);
-  active=true;const old=venue.preparePriceFeed(start,()=>active);await Promise.resolve();now+=300000;release();
-  assert.equal(await old,null);assert.equal(connections.length,0);
-  now=start*1000+1000;event.markets[0].slug='another-market';
-  const wrong=venue.preparePriceFeed(start);await Promise.resolve();release();
-  await assert.rejects(wrong,/配置/);assert.equal(connections.length,0);
-});
-
 test('RTDS decoding rejects the wrong oracle, window, symbol and future data and converts E18 correctly', () => {
   const now = 1800000010000;
   const frame = { topic: spec.topic, payload: { symbol: 'btc/usd', window_s: 60,

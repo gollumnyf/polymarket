@@ -121,9 +121,9 @@ orders.entry_reason 为独立 TEXT 字段。订单占用时保存当次策略说
 
 共享图表回看窗口保存于 data/range.sqlite 的 chart_settings 单行表，level_lookback_minutes 默认 60、最短 15、按 5 分钟调整；middle_percent 保存中间蓝色区域占比，首次升级从旧图表边界比例换算，默认 60%，两项均不写入交易策略配置。
 
-三连亏跟随模拟使用独立 data/loss-follow.sqlite，当前订单登记 LF-002（失利后上一笔×2+5），旧 LF-001 保留；loss_follow_triggers 按本盘会话保存触发三场与检测时间，恢复跟随时结合本盘最新成交；首单前若来源官方结果推翻触发信号，则撤回触发。
+三连亏跟随模拟使用独立 data/loss-follow.sqlite，新订单登记 LF-003，旧 LF-001 和 LF-002 保留；loss_follow_triggers 按本盘会话保存触发三场与检测时间，恢复跟随时结合本盘最新成交；首单前若来源官方结果推翻触发信号，则撤回触发。
 
-三连亏跟随实盘使用独立的 `data/loss-follow-live.sqlite`，复用标准订单、实时成交核对、`live_redemptions` 与 `loss_follow_triggers` 表。当前版本为 LF-002。模拟源账本只读，跟随触发、订单和风险参数在本盘独立保存。首次建库复制上场方向实盘的首笔和三个风控参数，以 LF-002 注册记录标识已初始化。
+三连亏跟随实盘使用独立的 `data/loss-follow-live.sqlite`，复用标准订单、实时成交核对、`live_redemptions` 与 `loss_follow_triggers` 表。当前版本为 LF-003。模拟源账本只读，跟随触发、订单和风险参数在本盘独立保存。首次建库复制上场方向实盘的首笔和三个风控参数，以 LF-002 或 LF-003 注册记录标识已初始化。LF-003 利用已保存的触发场次和首笔成交判断跳过轮次，拦截原因写入现有诊断和日志表。
 
 ### 上场方向布林模拟（已归档）
 
@@ -133,9 +133,9 @@ orders.entry_reason 为独立 TEXT 字段。订单占用时保存当次策略说
 
 指标暖机优先通过只读SQL聚合共享 `data/range.sqlite.range_price_bars`，按预言机窗口隔离；覆盖最近指标周期加31分钟。缺失的已结束K线，后台从官方 crypto-price 接口读取末秒参考快照并写入布林库专用 `bollinger_history_prices`：联合主键 `(oracle_window,price_at)`，`price` REAL正数，`source` TEXT固定 `polymarket_crypto_price`，`observed_at` Unix毫秒。字段独立存储，不写入实时ticks、市场场次结果或交易预测；本地实采桶优先。配置变化后按新周期计算缺失，重启复用已保存参考价，不新增实时行情连接。
 
-### 上场方向（超出不下单）模拟
+### 上场方向震荡区间模拟（已归档）
 
-`data/previous-level-limited.sqlite` 保存独立标准账户、交易参数版本、订单、日志、历史与LP-001策略版本。首次初始化以来源当前配置创建独立初始余额，后续不再复制或覆盖。标准schema版本保持不变，新增表由 `LevelLimitedStore` 创建：
+下线后保留 `data/previous-level-limited.sqlite`，服务不打开该库。该库保存独立标准账户、交易参数版本、订单、日志、历史与LP-001策略版本。首次初始化以来源当前配置创建独立初始余额，后续不再复制或覆盖。标准schema版本保持不变，新增表由 `LevelLimitedStore` 创建：
 
 - `level_limit_settings`：单行 `id=1`；`level_lookback_minutes`（15–1440，5分钟倍数）、`middle_percent`（0–100，不含0，仅图表显示）、`level_lag_minutes`（0–1440，5分钟倍数，首次复制原窗口滞后）、`updated_at`。独立于共享图表及其他模拟盘配置。
 - `level_limit_order_signals`：`order_id` 主键及orders外键，`lower_price`、`upper_price`、`observed_price`、`price_at`、`oracle_window`、`levels_round`、`observed_at`。下单占用时同一事务保存区间与报价证据，结算和隐藏不重写；清空已结束订单时一并清理，去重占用仍保留。下单原因也记录确切价格和上下界。

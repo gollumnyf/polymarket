@@ -1,6 +1,6 @@
 import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
 import {roundStart,ROUND_SECONDS,resetAtAmountLimit} from './strategy.mjs';
-import {ACTIVE_LOSS_FOLLOW_VERSION} from './strategy-versions.mjs';
+import {ACTIVE_LOSS_FOLLOW_VERSION,LOSS_FOLLOW_V2} from './strategy-versions.mjs';
 import {stakeAmount} from '../src/stake-amount.mjs';
 
 export class LossFollowEngine extends PreviousDirectionEngine {
@@ -14,7 +14,8 @@ export class LossFollowEngine extends PreviousDirectionEngine {
     )`);
     store.transaction(()=>{
       const version=ACTIVE_LOSS_FOLLOW_VERSION;
-      const initialized=store.db.prepare('SELECT 1 FROM strategy_versions WHERE id=?').get(version.id);
+      const initialized=store.db.prepare('SELECT 1 FROM strategy_versions WHERE id IN (?,?) LIMIT 1')
+        .get(version.id,LOSS_FOLLOW_V2.id);
       if(mode==='live'&&initialConfig&&!initialized){
         const account=store.account(mode);
         store.saveAccount({...account,config:{...account.config,
@@ -57,6 +58,38 @@ export class LossFollowEngine extends PreviousDirectionEngine {
       !Number.isFinite(quote.price)||quote.price<=0)return {result:'pending',source:'pending'};
     return {result:(quote.price>=opening.open?'UP':'DOWN')===order.direction?'won':'lost',source:'polymarket_realtime',priceAt:quote.time};
   }
+  firstLossCooldown(start,now,session,trigger){
+    if(this.strategyVersion!==ACTIVE_LOSS_FOLLOW_VERSION.id||!trigger||now<start*1000)return null;
+    const {first_round,second_round,source_round}=trigger;
+    if(second_round-first_round!==ROUND_SECONDS||source_round-second_round!==ROUND_SECONDS)return null;
+
+    const priorRound=start-ROUND_SECONDS;
+    if(priorRound<=source_round)return null;
+    const prior=this.store.orderForRound(this.mode,priorRound);
+    if(!prior||prior.session!==session||!(prior.shares>0)||!['open','lost'].includes(prior.status)||
+      !['UP','DOWN'].includes(prior.direction))return null;
+    const earlier=this.store.db.prepare(`SELECT 1 FROM orders
+      WHERE mode=? AND session=? AND round>? AND round<? AND shares>0
+      AND status IN ('open','won','lost','void') LIMIT 1`).get(this.mode,session,source_round,priorRound);
+    if(earlier)return null;
+
+    // For a binary loss the winning market direction is the opposite of the order.
+    const evidence=this.evidence(this,prior,now);
+    const shared=evidence.source==='official'?null:this.evidence(this.source,prior,now);
+    const useShared=shared&&(shared.source==='official'||evidence.result==='pending');
+    const result=useShared?shared:evidence;
+    if(result.result!=='lost')return null;
+    for(const round of [first_round,second_round,source_round]){
+      const order=this.source.store.orderForRound('paper',round);
+      if(order?.direction!==prior.direction||this.evidence(this.source,order,now).result!=='lost')return null;
+    }
+    const direction=prior.direction==='UP'?'DOWN':'UP';
+    return {
+      code:'LOSS_FOLLOW_FIRST_LOSS_COOLDOWN',
+      message:`来源 #${first_round}、#${second_round}、#${source_round} 连续三场 ${direction}，反买 ${prior.direction} 均失利。本轮首笔跟随 #${priorRound} 反买 ${prior.direction}${result.source==='official'?'官方确认':'预计'}失利，本场跳过，下一场恢复跟随检查`,
+      round:start,
+    };
+  }
   monitor(start,now=this.now(),preview=false){
     const own=this.store.account(this.mode),from=this.source.store.account('paper');
     const latest=this.store.recentFilledOrders(this.mode,own.session,1,{ignoreVoid:true})[0];
@@ -79,7 +112,8 @@ export class LossFollowEngine extends PreviousDirectionEngine {
     let losses=0;
     const samples=recent.map(order=>({round:order.round,...this.evidence(this.source,order,now)}));
     for(const sample of samples){if(sample.result!=='lost')break;losses++;}
-    return {active,losses,ready:active||losses>=3,samples,ownResult:latestResult?.result??null,
+    const cooldown=active?this.firstLossCooldown(start,now,own.session,trigger):null;
+    return {active,losses,ready:active||losses>=3,samples,ownResult:latestResult?.result??null,cooldown,
       armed,activeFrom:active?(armed?trigger.source_round:latest.round):null};
   }
   arm(start=roundStart(this.now())){
@@ -98,6 +132,7 @@ export class LossFollowEngine extends PreviousDirectionEngine {
   signal(start=roundStart(this.now())){
     const state=this.monitor(start);
     const base=this.source.signal(start);
+    if(state.cooldown)return {...base,direction:null,...state.cooldown};
     if(!state.ready)return {...base,direction:null,code:'LOSS_FOLLOW_WAIT',message:'等待上场方向模拟的新三连亏：'+state.losses+' / 3'};
     const evidence=state.active?'本轮跟随中，来源触发场 #'+state.activeFrom+'；获胜后重新待命':'来源三连亏：'+state.samples.map(x=>'#'+x.round+' '+x.source).join('、');
     return {...base,message:evidence+'；'+base.message};

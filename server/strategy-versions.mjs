@@ -14,10 +14,16 @@ export const LOSS_FOLLOW_VERSION=Object.freeze({
   rules:'监控上场方向模拟的三笔连续成交失利，含同源当前场预计结果。下一场复核后按来源策略方向、跳场及盘口价格范围下单，使用独立模拟马丁账本；跟随盘赢一笔后，等来源盘再产生三笔新失利。'
 });
 
-export const ACTIVE_LOSS_FOLLOW_VERSION=Object.freeze({
+export const LOSS_FOLLOW_V2=Object.freeze({
   id:'LF-002',
   name:'三连亏跟随 · 失利翻倍加五',
   rules:LOSS_FOLLOW_VERSION.rules+'资金规则改为：首笔按配置金额，失利后下一笔为上一笔预算×2+5 pUSD；任一获胜回首笔并待命，超过单笔金额或加倍次数上限回首笔。示例首笔5：5、15、35、75。'
+});
+
+export const ACTIVE_LOSS_FOLLOW_VERSION=Object.freeze({
+  id:'LF-003',
+  name:'三连亏跟随 · 首单同向失利跳一场',
+  rules:LOSS_FOLLOW_V2.rules+'若来源三笔失利对应三个紧邻且结果同向的市场，且本轮首笔跟随成交反买该方向也失利，仅跳过首笔成交后的紧邻一场。官方结果优先，未公布时使用同源预测。随后按原规则继续跟随及计算预算。'
 });
 
 export const LEVEL_LIMITED_VERSION=Object.freeze({

@@ -1,7 +1,6 @@
 // Stable page IDs match existing routes. Rename titles without changing IDs.
 export const PAGES=Object.freeze([
   {id:'previous',title:'上场方向模拟'},
-  {id:'level-limited',title:'上场方向震荡区间模拟'},
   {id:'loss-follow',title:'三连亏跟随模拟'},
   {id:'previous-live',title:'上场方向实盘'},
   {id:'loss-follow-live',title:'三连亏跟随实盘'},

@@ -66,7 +66,11 @@ export function replayLossFollow(data,{config=data.followerConfig,scope='all',ti
       engine.arm(original.round);
       const trigger=store.db.prepare('SELECT MAX(source_round) r FROM loss_follow_triggers').get().r;
       if(trigger!=null&&trigger!==previousTrigger){triggers++;previousTrigger=trigger;}
-      if(follow&&!engine.monitor(original.round).ready){skip('waiting_signal');continue;}
+      if(follow){
+        const signal=engine.monitor(original.round);
+        if(signal.cooldown){skip(signal.cooldown.code);continue;}
+        if(!signal.ready){skip('waiting_signal');continue;}
+      }
       const account=engine.resetStakeCycle(store.account('paper'));
       store.saveAccount(account);
       const open=store.pending('paper');
