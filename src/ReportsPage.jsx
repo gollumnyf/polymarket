@@ -12,6 +12,8 @@ const periodKey=dates=>`${dates.startDate}:${dates.endDate}`;
 const paperReports=[
   {id:'previous',title:PAGE_BY_ID.previous.title,endpoint:'/previous/api/paper/report'},
   {id:'loss-follow',title:'三连亏跟随',endpoint:'/loss-follow/api/paper/report'},
+  {id:'streak-reverse',title:PAGE_BY_ID['streak-reverse'].title,endpoint:'/streak-reverse/api/paper/report'},
+  {id:'streak-reverse-two',title:PAGE_BY_ID['streak-reverse-two'].title,endpoint:'/streak-reverse-two/api/paper/report'},
 ];
 const liveReports=['previous-live','loss-follow-live'].map(id=>({
   id,title:PAGE_BY_ID[id].title,endpoint:PAGE_BY_ID[id].path+'/api/live/report',

@@ -3,7 +3,7 @@ import {safeError} from './polymarket.mjs';
 import {ROUND_SECONDS,roundStart,simulateFill,validateConfig} from './strategy.mjs';
 import {RoundHistory,HISTORY_COUNT} from './history.mjs';
 import {HISTORY_DISPLAY_COUNT} from '../src/history-summary.mjs';
-import {ACTIVE_PREVIOUS_DIRECTION_VERSION} from './strategy-versions.mjs';
+import {ACTIVE_PREVIOUS_DIRECTION_VERSION,ACTIVE_PAPER_PREVIOUS_DIRECTION_VERSION} from './strategy-versions.mjs';
 
 export const PREVIOUS_ENTRY_SECONDS=15;
 export const PREVIOUS_PRICE_CAP=0.7;
@@ -16,10 +16,11 @@ const fixedConfig=config=>({...config,entryDelay:0,entryWindow:PREVIOUS_ENTRY_SE
   sameDirectionOnly:false,followPreviousAtOpen:true,reverseSignal:false});
 
 export class PreviousDirectionEngine extends Engine{
-  constructor(store,venue,{marketStore,previousMarketStore,mode='paper',...options}={}){
+  constructor(store,venue,{marketStore,previousMarketStore,mode='paper',repeatAfterLoss=mode==='paper',...options}={}){
     super(store,venue,{...options,modes:[mode]});this.marketStore=marketStore;this.previousMarketStore=previousMarketStore;this.mode=mode;
     this.history=new RoundHistory(venue,{now:this.now,store,lookback:Math.max(HISTORY_COUNT+1,HISTORY_DISPLAY_COUNT),displayCount:HISTORY_DISPLAY_COUNT});
-    this.strategyVersion=store.registerStrategyVersion(ACTIVE_PREVIOUS_DIRECTION_VERSION);
+    const version=mode==='paper'&&repeatAfterLoss?ACTIVE_PAPER_PREVIOUS_DIRECTION_VERSION:ACTIVE_PREVIOUS_DIRECTION_VERSION;
+    this.strategyVersion=store.registerStrategyVersion(version);
     const account=store.account(mode),config=fixedConfig({...account.config,
       maxPrice:!account.config.followPreviousAtOpen?PREVIOUS_PRICE_CAP:account.config.maxPrice});
     if(Object.keys(config).some(key=>config[key]!==account.config[key]))store.saveAccount({...account,config});
@@ -114,8 +115,16 @@ export class PreviousDirectionEngine extends Engine{
     for(const source of priority){const p=predictions.find(p=>p.source===source);if(p)return {round,direction:p.outcome,source};}
     return {round,direction:null,source:'pending'};
   }
-  signal(start=roundStart(this.now())){
-    const result=this.marketResult(start-300);
+  signal(start=roundStart(this.now()),{repeatAfterLoss=this.strategyVersion===ACTIVE_PAPER_PREVIOUS_DIRECTION_VERSION.id,
+    pauseOnFirstPair=true,lossCooldownRounds=3}={}){
+    const previousRound=start-ROUND_SECONDS;
+    const order=repeatAfterLoss?this.store.orderForRound(this.mode,previousRound):null;
+    const fill=order?.shares>0&&validDirection(order.direction)&&order.session===this.store.account(this.mode).session?order:null;
+    let result=this.marketResult(previousRound);
+    if(fill&&result.source!=='official'&&result.source!=='official_void'){
+      if(fill.status==='void')result={round:previousRound,direction:null,source:'official_void'};
+      if(fill.status==='won'||fill.status==='lost')result={round:previousRound,direction:fill.status==='won'?fill.direction:inverse(fill.direction),source:'official'};
+    }
     let newer=result,same=0,reverse=0,estimated=0,sameStreak=0,atHead=true;
     // 40 evaluated rounds need 41 outcomes. Missing rounds break adjacency.
     for(let i=2;i<=HISTORY_COUNT+1;i++){
@@ -132,7 +141,10 @@ export class PreviousDirectionEngine extends Engine{
     const comparison=`近 ${stats.total} 场：同向命中 ${same} / 反向命中 ${reverse}${estimated?`，含预计 ${estimated} 场`:''}${stats.missing?`，${stats.missing} 场不可比较`:''}`;
     if(result.source==='official_void')return {...result,stats,code:'PREVIOUS_ROUND_VOID',message:`${comparison}；上一场 #${result.round} 已官方判定作废，没有 UP/DOWN 方向，本场跳过`};
     if(!result.direction)return {...result,stats,code:'PREVIOUS_DIRECTION_MISSING',message:`${comparison}；上一场 #${result.round} 尚无官方结果或预计方向，等待这一场的数据`};
-    if(sameStreak===1)return {...result,previousDirection:result.direction,direction:null,stats,code:'PREVIOUS_REVERSE_COOLDOWN',message:`${comparison}；刚形成连续两场 ${result.direction}，本场跳过；下一场恢复反向买入检查，同一段走势不再重复跳过`};
+    if(pauseOnFirstPair&&sameStreak===1)return {...result,previousDirection:result.direction,direction:null,stats,code:'PREVIOUS_REVERSE_COOLDOWN',message:`${comparison}；刚形成连续两场 ${result.direction}，本场跳过；下一场恢复反向买入检查${repeatAfterLoss?'':'，同一段走势不再重复跳过'}`};
+    if(sameStreak>=lossCooldownRounds-1&&fill&&['open','lost'].includes(fill.status)&&fill.direction===inverse(result.direction))
+      return {...result,previousDirection:result.direction,direction:null,stats,code:'PREVIOUS_REVERSE_COOLDOWN',
+        message:`${comparison}；同向走势延续，最近${lossCooldownRounds===2?'两':'三'}场均为 ${result.direction}；上一场 #${previousRound} 已成交买 ${fill.direction}，${result.source==='official'?'官方确认':'预计'}失利，本场再跳过一场；下一场恢复反向买入检查`};
     const source={official:'官方最终结果',polymarket_event_metadata:'官方场次起止价预计',polymarket_crypto_price:'官方接口起止价预计',polymarket_last_second:'同源末秒价预计',polymarket_last_available:'同源收盘前最后可用价预计'}[result.source];
     const direction=inverse(result.direction);
     return {...result,previousDirection:result.direction,direction,stats,code:null,message:`${comparison}；固定买上一场反方向；上一场 #${result.round} ${source} ${result.direction}，本场买 ${direction}`};

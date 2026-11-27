@@ -4,12 +4,13 @@ import {pathToFileURL} from 'node:url';
 import {Store} from '../server/store.mjs';
 import {LossFollowEngine} from '../server/loss-follow-engine.mjs';
 import {money,nextAmount} from '../server/strategy.mjs';
-import {LOSS_FOLLOW_VERSION} from '../server/strategy-versions.mjs';
+import {LOSS_FOLLOW_VERSION,LOSS_FOLLOW_V4} from '../server/strategy-versions.mjs';
 
 // Offline opportunity replay: source fills provide the entry time, direction and book.
 // Never opens a venue connection or writes to an existing account database.
 export function replayLossFollow(data,{config=data.followerConfig,scope='all',timing='recorded',follow=true,legacy=false}={}){
   const orders=data.orders.filter(o=>scope==='all'||o.strategyVersion===scope);
+  const sourceVersions=[...new Set(orders.map(o=>o.strategyVersion??null))];
   const byRound=new Map(orders.map(o=>[o.round,o]));
   let now=0;
   const finalAt=o=>timing==='final'?(o.round+300)*1000:o.settledAt;
@@ -44,8 +45,10 @@ export function replayLossFollow(data,{config=data.followerConfig,scope='all',ti
     signal:start=>({direction:byRound.get(start)?.direction??null,code:null,message:'历史来源成交机会'})};
   const store=new Store(':memory:');
   const engine=new LossFollowEngine(store,{readiness:()=>({enabled:false})},{source,now:()=>now});
-  if(legacy||!follow)engine.nextAmount=nextAmount;
-  if(legacy)engine.strategyVersion=store.registerStrategyVersion(LOSS_FOLLOW_VERSION);
+  if(!follow||legacy===true){
+    engine.nextAmount=nextAmount;
+    engine.strategyVersion=store.registerStrategyVersion(LOSS_FOLLOW_VERSION);
+  }else if(legacy==='LF-004')engine.strategyVersion=store.registerStrategyVersion(LOSS_FOLLOW_V4);
   store.saveAccount({...store.account('paper'),running:true,balance:config.initialBalance,
     startingBalance:config.initialBalance,config});
   const trades=[],skipped={},pending=[];
@@ -81,8 +84,8 @@ export function replayLossFollow(data,{config=data.followerConfig,scope='all',ti
       const account=engine.resetStakeCycle(store.account('paper'));
       store.saveAccount(account);
       const open=store.pending('paper');
-      if(open.some(o=>!o.prediction)){skip('prediction_pending');continue;}
-      const projected=engine.projectAccount(account,open),budget=engine.nextAmount(projected);
+      if(open.some(o=>!o.prediction&&!engine.isPreviousStakeCycle(o,account))){skip('prediction_pending');continue;}
+      const projected=engine.executionAccount(engine.projectAccount(account,open)),budget=engine.nextAmount(projected);
       const risk=engine.riskReason(projected,account.balance);
       if(risk){skip('risk_or_balance');continue;}
       let fill;
@@ -106,7 +109,8 @@ export function replayLossFollow(data,{config=data.followerConfig,scope='all',ti
       fees+=t.fee;turnover+=t.cost;
     }
     const wins=trades.filter(t=>t.status==='won').length;
-    return {scope,timing,follow,strategyVersion:follow?engine.strategyVersion:'PR-001',opportunities:orders.length,first:orders[0]?.round,last:orders.at(-1)?.round,
+    return {scope,timing,follow,strategyVersion:follow?engine.strategyVersion:sourceVersions.length===1?sourceVersions[0]:null,
+      sourceVersions,opportunities:orders.length,first:orders[0]?.round,last:orders.at(-1)?.round,
       config,triggers,trades:trades.length,wins,losses:trades.filter(t=>t.status==='lost').length,
       winRate:trades.length?wins/trades.length:null,pnl,returnOnInitial:pnl/config.initialBalance,
       turnover:money(turnover),yieldOnTurnover:turnover?pnl/turnover:null,fees:money(fees),
@@ -161,8 +165,9 @@ function load(){
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   const data=load(),results=[];
-  const replay=options=>replayLossFollow(data,{...options,legacy:process.argv.includes('--legacy-lf001')});
-  for(const scope of ['all','PR-001'])for(const timing of ['recorded','final']){
+  const legacy=process.argv.includes('--legacy-lf001')|| (process.argv.includes('--legacy-lf004')?'LF-004':false);
+  const replay=options=>replayLossFollow(data,{...options,legacy});
+  for(const scope of ['all','PR-001','PR-002'])for(const timing of ['recorded','final']){
     results.push(replay({scope,timing}));
     if(timing==='recorded'){
       results.push(replay({scope,timing,config:{...data.followerConfig,maxAmount:data.sourceConfig.maxAmount,maxDoublings:data.sourceConfig.maxDoublings,stopLoss:data.sourceConfig.stopLoss}}));

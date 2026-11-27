@@ -113,15 +113,21 @@ ORDER BY time;
 
 当前交易页读取 41 场已结束市场（另在前端显示当前场）。后台结算查询按最多 20 个 condition ID 分批执行，单批失败不会丢弃其他批次或已取得的场次起止价。后台策略轮询与页面历史读取共用 round_history；历史接口不等上游请求，先合并并返回 SQLite 中的新结果；开盘保护时段延后补拉，避免内存 pending 缓存遮盖已结算数据。缺失字段不覆盖已保存价格，暂未结算或接口漏项不覆盖已确认结果；新获得的官方价格仍可补齐已结算记录。隐藏交易记录不作用于 round_history。
 
+独立历史场次页在 `data/range.sqlite` 使用 `market_history_cache`。`round` 为场次开盘秒级主键，`status`、`result`、`open` 和 `close` 保存接口核对值，`checked_at` 和 `verified_at` 为毫秒时间戳。`verified_at` 为空表示仍待核验。`close_source` 记录收盘价来自 Gamma 场次元数据或官方 crypto-price，旧缓存有收盘价且未保存来源时沿用 Gamma。核验缓存优先展示，未确认时可回退读现有市场历史、预测和起始价。缓存写入与策略使用的 `round_history`、`round_predictions` 隔离，接口不会读取订单表。已核验的缓存记录可跨重启复用。
+
 ### 下单原因（schema v10）
 
 orders.entry_reason 为独立 TEXT 字段。订单占用时保存当次策略说明、参考价、蓝色区域条件、开盘后秒数、马丁金额、盘口及成交限价。后续结算、隐藏、配置修改均不重写原因；CSV 使用 entryReason 导出。旧记录为空时，页面仅按该订单已有策略证据还原并标明历史依据，证据不足则明确提示未记录。连续反买只评估本场紧前 N 场；range_streak_events 是审计记录，不再用旧事件替代当前连续窗口。
 
 迁移 v12 新增 strategy_versions（版本编号、名称、规则、首次登记时间）和 orders.strategy_version 外键。新单下单占用时固化版本；旧单保留 NULL，只按已有 signal_rule、config_id 和下单依据分析。版本说明不可用同号覆盖。CSV 同时导出 strategyVersion 和 configId；可按 mode、strategy_version 分组比较已结算订单。
 
+上场方向模拟新订单登记 PR-002，实盘登记 PR-001。模拟盘的再次跳场读取紧邻上一场的本会话已成交订单，以及相邻市场结果与预测。拦截原因通过 `PREVIOUS_REVERSE_COOLDOWN` 写入现有诊断。逻辑从已存记录恢复，无需迁移。
+
+三场同向反买模拟使用 `data/streak-reverse.sqlite`，订单登记 SR-001。两场同向反买模拟使用 `data/streak-reverse-two.sqlite`，订单登记 SR-002。两盘使用标准 SQLite 表，分别在订单原因保存紧邻三场或两场的方向和官方／预计依据。市场历史、场次预测和图表读取现有共享数据，账户资金、风控配置、交易和日志按盘保存。报表各自读取本盘订单，包含隐藏记录。
+
 共享图表回看窗口保存于 data/range.sqlite 的 chart_settings 单行表，level_lookback_minutes 默认 60、最短 15、按 5 分钟调整；middle_percent 保存中间蓝色区域占比，首次升级从旧图表边界比例换算，默认 60%，两项均不写入交易策略配置。
 
-三连亏跟随模拟使用独立 `data/loss-follow.sqlite`，新订单登记 LF-004，旧订单沿用原版本。`loss_follow_triggers` 按本盘会话保存触发三场与检测时间；首单前若来源官方结果推翻触发信号，则撤回触发。LF-004 根据本盘上一场成交和相邻市场结果判断是否跳过当前场，沿用 `round_history`、`round_predictions` 和共享场次数据，拦截原因写入现有诊断和日志表。无需数据迁移。
+三连亏跟随模拟使用独立 `data/loss-follow.sqlite`，新订单登记 LF-005，旧订单沿用原版本。`loss_follow_triggers` 按本盘会话保存触发三场与检测时间，首单前若来源官方结果推翻触发信号，则撤回触发。LF-005 用本会话最近实际成交的场次作为下一轮统计的起点，包含后来作废的成交。记录成交后即时生效，重启后从 `orders` 恢复，无需数据迁移。
 
 三连亏跟随实盘使用独立的 `data/loss-follow-live.sqlite`，复用标准订单、实时成交核对、`live_redemptions` 与 `loss_follow_triggers` 表。当前版本为 LF-003。模拟源账本只读，跟随触发、订单和风险参数在本盘独立保存。首次建库复制上场方向实盘的首笔和三个风控参数，以 LF-002 或 LF-003 注册记录标识已初始化。LF-003 利用已保存的触发场次和首笔成交判断跳过轮次，拦截原因写入现有诊断和日志表。
 

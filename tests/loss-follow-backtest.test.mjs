@@ -35,13 +35,13 @@ test('independent Martingale resets at the cap and cannot treat a winning trade 
 test('LF-004 replay retains the increment for both quotes and capital limits',()=>{
   const d=data(['lost','lost','lost','lost','lost','lost','won']);
   for(const i of [1,4])Object.assign(d.orders[i],{direction:'DOWN',finalDirection:'UP'});
-  const r=replayLossFollow(d,{config:{...d.followerConfig,baseAmount:5}});
+  const r=replayLossFollow(d,{legacy:'LF-004',config:{...d.followerConfig,baseAmount:5}});
   assert.equal(r.strategyVersion,'LF-004');
   assert.deepEqual(r.ledger.map(t=>t.budget),[5,15,35,75]);
   assert.deepEqual(r.ledger.map(t=>(t.round-1800000000)/300),[3,4,5,6]);
   assert.equal(r.skipped.LOSS_FOLLOW_SAME_DIRECTION_LOSS_COOLDOWN,undefined);
   assert.equal(r.pnl,20);
-  const capped=replayLossFollow(d,{config:{...d.followerConfig,baseAmount:5,maxAmount:34}});
+  const capped=replayLossFollow(d,{legacy:'LF-004',config:{...d.followerConfig,baseAmount:5,maxAmount:34}});
   assert.deepEqual(capped.ledger.map(t=>t.budget),[5,15,5,15]);
 });
 
@@ -49,7 +49,7 @@ test('LF-004 replay checks adjacent markets without source fills and repeats the
   const d=data(['lost','lost','lost','lost','lost','lost','lost','lost','won']);
   const [{round}]=d.orders.splice(3,1);
   d.marketHistory=new Map([[round,{status:'resolved',result:'DOWN',updated_at:(round+300)*1000+1000}]]);
-  const r=replayLossFollow(d,{config:{...d.followerConfig,baseAmount:5}});
+  const r=replayLossFollow(d,{legacy:'LF-004',config:{...d.followerConfig,baseAmount:5}});
   assert.deepEqual(r.ledger.map(t=>t.budget),[5,15,35]);
   assert.deepEqual(r.ledger.map(t=>(t.round-1800000000)/300),[4,6,8]);
   assert.equal(r.skipped.LOSS_FOLLOW_SAME_DIRECTION_LOSS_COOLDOWN,2);
@@ -58,9 +58,17 @@ test('LF-004 replay checks adjacent markets without source fills and repeats the
 
 test('replay respects real book depth instead of scaling historical profit linearly',()=>{
   const d=data(['lost','lost','lost','lost','won']);
-  Object.assign(d.orders[1],{direction:'DOWN',finalDirection:'UP'});
-  d.orders.at(-1).book.asks=[{price:.5,size:10}];
+  d.orders[3].book.asks=[{price:.5,size:10}];
   const r=replayLossFollow(d);
-  assert.equal(r.trades,1);assert.equal(r.pnl,-10);
+  assert.equal(r.trades,1);assert.equal(r.pnl,10);
   assert.equal(r.skipped.ORDER_BOOK_DEPTH_EXHAUSTED,1);
+});
+
+test('LF-005 replay takes one fixed-size fill per fresh source loss streak',()=>{
+  const d=data(['lost','lost','lost','lost','lost','lost','lost','won']);
+  const r=replayLossFollow(d,{config:{...d.followerConfig,baseAmount:5}});
+  assert.equal(r.strategyVersion,'LF-005');
+  assert.equal(r.triggers,2);
+  assert.deepEqual(r.ledger.map(t=>[(t.round-1800000000)/300,t.budget,t.status]),[[3,5,'lost'],[7,5,'won']]);
+  assert.equal(r.pnl,0);
 });

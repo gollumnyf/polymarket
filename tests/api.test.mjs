@@ -343,7 +343,7 @@ test('price SSE emits batches even while the execution engine sends no snapshots
   abort.abort();
 });
 
-test('both dashboard routes replay identical shared chart history, target, range and live prices',async t=>{
+test('dashboard routes replay identical shared chart history, target, range and live prices',async t=>{
   const {EventEmitter}=await import('node:events');
   const store=new Store(':memory:'),feed=new EventEmitter(),opening=new EventEmitter(),range=new EventEmitter();
   const now=Date.now(),round=Math.floor(now/300000)*300;
@@ -352,7 +352,7 @@ test('both dashboard routes replay identical shared chart history, target, range
   const paper=new Engine(store,{readiness:()=>({enabled:false})}),live=new Engine(store,{readiness:()=>({enabled:false})});
   const seed={time:now-1000,price:74050,oracleWindow:60};
   store.tick(seed.time,seed.price,'polymarket',seed.oracleWindow);
-  const server=createApp(paper,{previousEngine:paper,previousLiveEngine:live,chart:{feed,opening,range,store}}).listen(0,'127.0.0.1');
+  const server=createApp(paper,{previousEngine:paper,previousLiveEngine:live,streakReverseEngine:paper,twoRoundReverseEngine:paper,chart:{feed,opening,range,store}}).listen(0,'127.0.0.1');
   await new Promise(resolve=>server.once('listening',resolve));
   const abort=new AbortController();
   t.after(()=>{abort.abort();server.closeAllConnections();server.close();store.close();});
@@ -370,7 +370,7 @@ test('both dashboard routes replay identical shared chart history, target, range
       return [event,JSON.parse(data)];
     };
   };
-  const subscribers=await Promise.all(['/api/chart-events','/previous/api/chart-events','/previous-live/api/chart-events'].map(subscribe));
+  const subscribers=await Promise.all(['/api/chart-events','/previous/api/chart-events','/previous-live/api/chart-events','/streak-reverse/api/chart-events','/streak-reverse-two/api/chart-events'].map(subscribe));
   const point={time:now,price:74055};
   feed.emit('price',{...point,oracleWindow:60},[point]);
   const expected=[['chart-opening',opening.current()],['chart-range',range.current()],['chart-history',[seed]],['chart-prices',[{...point,oracleWindow:60}]]];

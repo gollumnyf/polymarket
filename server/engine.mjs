@@ -315,7 +315,7 @@ export class Engine extends EventEmitter {
       oracleWindow:this.spot?.round===start?this.spot.windowSeconds??null:this.store.roundOpening(start)?.oracleWindow??null,
       feeSchedule: this.market.feeSchedule, pnl: null,...this.orderSignalFields(account,start) };
     order.entryReason=[order.entryReason||`入场规则 ${order.signalRule}：参考价 ${order.referencePrice}，当前价 ${order.signalPrice}，选择买 ${direction}`,
-      `场次 #${start}，开盘后 ${((order.createdAt-start*1000)/1000).toFixed(3)} 秒；马丁第 ${order.doubling+1} 笔，预算 ${order.budget.toFixed(2)} pUSD；盘口卖一 ${book.asks[0]?.price}，预计成交均价 ${quote.price}，本次成交限价 ${quote.priceLimit}`].join('；');
+      `场次 #${start}，开盘后 ${((order.createdAt-start*1000)/1000).toFixed(3)} 秒；${tradeAccount.stakeLabel??`马丁第 ${order.doubling+1} 笔`}，预算 ${order.budget.toFixed(2)} pUSD；盘口卖一 ${book.asks[0]?.price}，预计成交均价 ${quote.price}，本次成交限价 ${quote.priceLimit}`].join('；');
     if(tradeAccount.stakeProtection)order.entryReason+='；'+tradeAccount.stakeProtection;
     const reserved=mode==='live'&&this.redemption?this.store.transaction(()=>{
       if(!this.store.reserveOrder(order,book))return false;
@@ -345,8 +345,9 @@ export class Engine extends EventEmitter {
         this.runtimeIssue(mode,'订单提交结果不明，策略保持运行并继续核对；确认前不新增买入，不重复提交');return;
       }
     }
-    this.status[mode] = '本场持仓中；结束后按平台起止价预计结果续投';
+    this.status[mode] = this.positionStatus();
   }
+  positionStatus(){return '本场持仓中；结束后按平台起止价预计结果续投';}
   entryGuard(){return null;}
   requiresCurrentOpening(){return true;}
   orderSignalFields(){return {};}
@@ -371,11 +372,12 @@ export class Engine extends EventEmitter {
   applyOrderPrediction(order,prices){
     if(order?.status!=='open'||order.prediction&&order.prediction.source!=='polymarket_last_available'||this.now()<order.end*1000)return;
     const prediction=predictionFromPrices(order,prices,this.now());if(!prediction)return;
-    const before=this.projectAccount(this.store.account(order.mode),this.store.pending(order.mode)).amountLimitResets;
+    const account=this.store.account(order.mode);
+    const before=this.projectAccount(account,this.store.pending(order.mode)).amountLimitResets;
     const stored=this.store.savePrediction(prediction);
     if(order.prediction&&stored.source===order.prediction.source&&stored.priceAt===order.prediction.priceAt&&stored.close===order.prediction.close)return;
     const after=this.projectAccount(this.store.account(order.mode),this.store.pending(order.mode)).amountLimitResets;
-    this.log(order.mode,'info',`场次 #${order.round} 预计${prediction.won?'获胜':'失利'}：起始 ${prediction.open} → ${prediction.source==='polymarket_last_second'?'同源末秒价':prediction.source==='polymarket_last_available'?'向前追溯同源报价':'平台终止价'} ${prediction.close}${prediction.source==='polymarket_last_available'?`（采样 ${new Date(prediction.priceAt).toISOString()}，距收盘 ${(order.end*1000-prediction.priceAt)/1000} 秒）`:''}${order.prediction?'；已更新之前的追溯预测':''}；资金序列按预计结果继续`);
+    this.log(order.mode,'info',`场次 #${order.round} 预计${prediction.won?'获胜':'失利'}：起始 ${prediction.open} → ${prediction.source==='polymarket_last_second'?'同源末秒价':prediction.source==='polymarket_last_available'?'向前追溯同源报价':'平台终止价'} ${prediction.close}${prediction.source==='polymarket_last_available'?`（采样 ${new Date(prediction.priceAt).toISOString()}，距收盘 ${(order.end*1000-prediction.priceAt)/1000} 秒）`:''}${order.prediction?'；已更新之前的追溯预测':''}${this.isPreviousStakeCycle(order,account)?'；等待官方结算':'；资金序列按预计结果继续'}`);
     if(after>before)this.log(order.mode,'info',`预计下一笔超过${this.stakeCycleLimitLabel()}，恢复首笔 ${this.store.account(order.mode).config.baseAmount.toFixed(2)} 开始新轮`);
   }
   async getRoundPrediction(round,order=null) {

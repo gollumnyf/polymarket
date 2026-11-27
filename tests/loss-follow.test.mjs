@@ -6,7 +6,7 @@ import {LossFollowEngine} from '../server/loss-follow-engine.mjs';
 import {stakeAmount} from '../src/stake-amount.mjs';
 import {createApp} from '../server/index.mjs';
 import {apiPath} from '../src/api.mjs';
-import {LOSS_FOLLOW_V2} from '../server/strategy-versions.mjs';
+import {LOSS_FOLLOW_V2,LOSS_FOLLOW_V4} from '../server/strategy-versions.mjs';
 
 const round=1800000000;
 test('live follower uses paper loss evidence, its own limits, and a single live execution',async t=>{
@@ -59,7 +59,7 @@ test('live follower uses paper loss evidence, its own limits, and a single live 
   assert.equal(live.nextAmount({...liveStore.account('live'),losses:1}),15);
 });
 
-function fixture(t){
+function fixture(t,version){
   let now=round*1000+290000,tick={time:now,price:95};
   const sourceStore=new Store(':memory:'),store=new Store(':memory:');
   t.after(()=>{store.close();sourceStore.close();});
@@ -67,6 +67,7 @@ function fixture(t){
   const source=new PreviousDirectionEngine(sourceStore,venue,{now:()=>now});
   source.signal=()=>({direction:'DOWN',code:null,message:'source signal'});
   const follower=new LossFollowEngine(store,venue,{source,now:()=>now});
+  if(version)follower.strategyVersion=store.registerStrategyVersion(version);
   const order=(target,k,status,direction='UP')=>{
     const id=target===store?'own'+k:'source'+k;
     const value={id,round:k,end:k+300,mode:'paper',session:target.account('paper').session,direction,status,shares:10,conditionId:'c'+k,oracleWindow:60,cost:5};
@@ -81,6 +82,20 @@ function fixture(t){
   };
   return {source,sourceStore,store,follower,order,opening,final,market,setNow:value=>{now=value;},setPrice:value=>{tick={time:now,price:value};}};
 }
+
+test('paper follows PR-002 repeated skips while live keeps the original source entry cadence',t=>{
+  const {source,sourceStore,follower,order,final,setNow}=fixture(t);
+  delete source.signal;
+  for(const offset of [-900,-600,-300]){
+    order(sourceStore,round+offset,'lost');
+    final(round+offset);
+  }
+  setNow(round*1000+1000);
+  const liveStore=new Store(':memory:');t.after(()=>liveStore.close());
+  const live=new LossFollowEngine(liveStore,source.venue,{source,mode:'live',now:source.now});
+  assert.equal(follower.signal(round).code,'PREVIOUS_REVERSE_COOLDOWN');
+  assert.equal(live.signal(round).direction,'UP');
+});
 test('third provisional loss appears before rollover and gates an independent simulated fill after recheck',async t=>{
   const {source,sourceStore,store,follower,order,opening,final,market,setNow,setPrice}=fixture(t);
   order(sourceStore,round-900,'lost');
@@ -99,7 +114,7 @@ test('third provisional loss appears before rollover and gates an independent si
   market(round+300);
   await follower.start('paper');
   await follower.attempt('paper');
-  assert.equal(store.orderForRound('paper',round+300)?.strategyVersion,'LF-004');
+  assert.equal(store.orderForRound('paper',round+300)?.strategyVersion,'LF-005');
   assert.equal(store.orderForRound('paper',round+300)?.direction,'DOWN');
   assert.equal(sourceStore.orderCount('paper'),4);
   assert.equal(sourceStore.account('paper').balance,1000);
@@ -137,8 +152,43 @@ test('official correction invalidates a provisional armed cycle before its first
   assert.equal(follower.signal(round+300).code,'LOSS_FOLLOW_WAIT');
 });
 
-test('LF-004 retains the 5, 15, 35, 75 sequence when the loss markets are not all aligned',async t=>{
+test('LF-005 consumes a trigger on fill, re-arms from fresh losses, and sizes each cycle at the base',async t=>{
   const {source,sourceStore,store,follower,order,market,setNow}=fixture(t);
+  follower.configure('paper',{...store.account('paper').config,baseAmount:5});
+  for(const k of [-900,-600,-300])order(sourceStore,round+k,'lost');
+  const open=start=>{setNow(start*1000+1000);market(start);};
+  open(round);
+  await follower.start('paper');await follower.attempt('paper');
+  const first=store.orderForRound('paper',round);
+  assert.equal(first.budget,5);
+  assert.equal(follower.monitor(round).armed,false);
+  order(sourceStore,round,'lost');
+  open(round+300);
+  assert.equal(follower.monitor(round+300).losses,0);
+  const restored=new LossFollowEngine(store,follower.venue,{source,now:follower.now});
+  assert.equal(restored.signal(round+300).code,'LOSS_FOLLOW_WAIT');
+  for(const k of [300,600,900]){
+    order(sourceStore,round+k,'lost');
+    open(round+k+300);
+    await follower.attempt('paper');
+  }
+  // An open first fill with no forecast neither reopens its trigger nor delays the new one.
+  assert.equal(store.prediction(first.id),null);
+  assert.deepEqual(store.orders('paper').map(o=>[o.round,o.budget,o.doubling]),[[round+1200,5,0],[round,5,0]]);
+  assert.equal(follower.snapshot().accounts.paper.nextAmount,5);
+  store.saveOrder({...first,status:'lost'});
+  assert.equal(follower.monitor(round+1200).armed,false);
+  const second=store.orderForRound('paper',round+1200);
+  store.saveOrder({...second,status:'void'});
+  assert.equal(follower.signal(round+1500).code,'LOSS_FOLLOW_WAIT');
+  const settled=follower.accountAfterSettlement(store.account('paper'),-5,false,first);
+  assert.equal(settled.pnl,-5);
+  assert.equal(settled.settled,1);
+  assert.equal(settled.losses,0);
+});
+
+test('LF-004 retains the 5, 15, 35, 75 sequence when the loss markets are not all aligned',async t=>{
+  const {source,sourceStore,store,follower,order,market,setNow}=fixture(t,LOSS_FOLLOW_V4);
   follower.configure('paper',{...store.account('paper').config,baseAmount:5});
   for(const offset of [-900,-600,-300])order(sourceStore,round+offset,'lost');
   for(let i=0;i<4;i++){
@@ -174,7 +224,7 @@ test('LF-004 retains the 5, 15, 35, 75 sequence when the loss markets are not al
 });
 
 test('LF-004 uses the increment for cap reset, risk budget, settled wins and restart',t=>{
-  const {source,store,follower}=fixture(t);
+  const {source,store,follower}=fixture(t,LOSS_FOLLOW_V4);
   const account={...store.account('paper'),losses:2,config:{...store.account('paper').config,baseAmount:5,maxAmount:34}};
   assert.equal(follower.nextAmount(follower.resetStakeCycle(account)),5);
   const equal={...account,config:{...account.config,maxAmount:35}};
@@ -186,12 +236,13 @@ test('LF-004 uses the increment for cap reset, risk budget, settled wins and res
   assert.equal(follower.resetStakeCycle({...equal,config:{...equal.config,maxDoublings:1}}).losses,0);
   store.saveAccount(equal);
   const restored=new LossFollowEngine(store,follower.venue,{source,now:follower.now});
+  restored.strategyVersion=store.registerStrategyVersion(LOSS_FOLLOW_V4);
   assert.equal(restored.snapshot().accounts.paper.nextAmount,35);
   assert.equal(stakeAmount(2.25,2,5),24);
 });
 
 test('each follower loss in three consecutive DOWN markets skips one round and preserves the stake sequence',async t=>{
-  const {source,sourceStore,store,follower,order,market,final,setNow}=fixture(t);
+  const {source,sourceStore,store,follower,order,market,final,setNow}=fixture(t,LOSS_FOLLOW_V4);
   follower.configure('paper',{...store.account('paper').config,baseAmount:5});
   order(sourceStore,round-1200,'lost','DOWN');
   for(const offset of [-900,-600])order(sourceStore,round+offset,'lost');
@@ -229,6 +280,7 @@ test('each follower loss in three consecutive DOWN markets skips one round and p
   assert.equal(store.orderForRound('paper',round+300),null);
   assert.equal(store.account('paper').running,true);
   const restored=new LossFollowEngine(store,follower.venue,{source,now:follower.now});
+  restored.strategyVersion=store.registerStrategyVersion(LOSS_FOLLOW_V4);
   assert.equal(restored.signal(round+300).code,cooldown);
   final(round+300);
   open(round+600);
@@ -247,7 +299,7 @@ test('each follower loss in three consecutive DOWN markets skips one round and p
 });
 
 test('LF-004 only pauses for adjacent markets and uses official results over estimates',async t=>{
-  const {source,sourceStore,store,follower,order,final,setNow}=fixture(t);
+  const {source,sourceStore,store,follower,order,final,setNow}=fixture(t,LOSS_FOLLOW_V4);
   source.signal=()=>({direction:'UP',code:null,message:'source buys UP'});
   for(const offset of [-900,-600,-300])order(sourceStore,round+offset,'lost');
   setNow(round*1000+1000);

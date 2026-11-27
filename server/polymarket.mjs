@@ -264,14 +264,17 @@ export class Polymarket {
   }
   drainPriceTicks() { return this.priceFeed.drain(this).map(point=>({...point,oracleWindow:point.oracleWindow??this.priceFeed.spec?.seconds??null})); }
   latestOfficialPrices(){return {points:this.priceFeed.recent?.(2)||[],oracleWindow:this.priceFeed.spec?.seconds??null};}
-  async roundPrices(order) {
+  async roundPrices(order,{event,signal}={}) {
     const slug=`btc-updown-5m-${order.round}`;
-    const query=new URLSearchParams({slug,limit:'1'});
-    const response=await this.fetch(`https://gamma-api.polymarket.com/events?${query}`);
-    if (!response.ok) throw new Error(`场次预测价格接口 HTTP ${response.status}`);
-    const events=await response.json();
-    const event=Array.isArray(events) ? events.find(item=>item.slug===slug) : null;
-    const market=event?.markets?.find(item=>item.slug===slug && (!order.conditionId || item.conditionId===order.conditionId));
+    const options=signal?{signal}:undefined;
+    if(event===undefined){
+      const query=new URLSearchParams({slug,limit:'1'});
+      const response=await this.fetch(`https://gamma-api.polymarket.com/events?${query}`,options);
+      if (!response.ok) throw new Error(`场次预测价格接口 HTTP ${response.status}`);
+      const events=await response.json();
+      event=Array.isArray(events) ? events.find(item=>item.slug===slug) : null;
+    }
+    const market=event?.slug===slug?event.markets?.find(item=>item.slug===slug && (!order.conditionId || item.conditionId===order.conditionId)):null;
     if (!market) return null;
     const price=value=>!['number','string'].includes(typeof value) || String(value).trim()==='' ||
       !Number.isFinite(Number(value)) || Number(value)<=0 ? null : Number(value);
@@ -283,7 +286,7 @@ export class Polymarket {
     const params=new URLSearchParams({symbol:'BTC',eventStartTime:new Date(order.round*1000).toISOString(),
       endDate:new Date(order.end*1000).toISOString(),variant:'fiveminute',
       twapEnabled:String(spec.seconds>0),twapLookbackSeconds:String(spec.seconds||60)});
-    const fallback=await this.fetch(`https://polymarket.com/api/crypto/crypto-price?${params}`);
+    const fallback=await this.fetch(`https://polymarket.com/api/crypto/crypto-price?${params}`,options);
     if (!fallback.ok) throw new Error(`场次起止价接口 HTTP ${fallback.status}`);
     const pair=await fallback.json();
     const apiOpen=price(pair.openPrice), apiClose=price(pair.closePrice);

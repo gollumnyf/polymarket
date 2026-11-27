@@ -11,6 +11,7 @@ import ChartSettings from './ChartSettings.jsx';
 import RangeStatus,{RangeGuide} from './RangeStatus.jsx';
 import Sidebar from './Sidebar.jsx';
 import ReportsPage from './ReportsPage.jsx';
+import MarketHistoryPage from './MarketHistoryPage.jsx';
 import {entryModeLabel,oppositeDirection} from './entry-mode.mjs';
 import PriceChart from './PriceChart.jsx';
 import {chartOpeningReference,mergeChartPrices} from './chart-prices.mjs';
@@ -31,7 +32,10 @@ function App() {
   const pageId=location.pathname.split('/')[1];
   const lossFollowLive=pageId==='loss-follow-live';
   const lossFollow=pageId==='loss-follow'||lossFollowLive;
-  const previous=lossFollow||location.pathname.startsWith('/previous');
+  const streakRounds=PAGE_BY_ID[pageId]?.streakRounds;
+  const streakReverse=Boolean(streakRounds);
+  const streakTitle=streakRounds===2?'两场同向反买':'三场同向反买';
+  const previous=lossFollow||streakReverse||location.pathname.startsWith('/previous');
   const previousLive=location.pathname.startsWith('/previous-live');
   const livePage=previousLive||lossFollowLive;
   const paperPage=previous&&!livePage;
@@ -91,7 +95,14 @@ function App() {
     const timer = setInterval(() => {if(!document.hidden)setClock(Date.now());}, 250);
     return () => { stopped = true; clearTimeout(retry); stopStream(); clearInterval(timer); };
   }, []);
-  useEffect(() => { const pop = () => setMode(/^\/(?:previous|loss-follow)(?:\/|$)/.test(location.pathname) ? 'paper' : 'live'); addEventListener('popstate', pop); return () => removeEventListener('popstate', pop); }, []);
+  useEffect(() => {
+    const pop = () => {
+      const page=location.pathname.split('/')[1];
+      setMode(page==='previous'||page==='loss-follow'||PAGE_BY_ID[page]?.streakRounds?'paper':'live');
+    };
+    addEventListener('popstate', pop);
+    return () => removeEventListener('popstate', pop);
+  }, []);
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 5500); return () => clearTimeout(id); }, [toast]);
 
   useEffect(()=>{
@@ -149,7 +160,7 @@ function App() {
 
   const adaptive=!!state?.adaptiveExecution&&!live;
   const streakActive=!!(state?.entrySignal?.streakSignal||state?.entrySignal?.lockedStreak);
-  const rangeEntryLabel=lossFollow?(state?.lossFollow?`跟随来源 · ${fmt(state.lossFollow.minPrice)}–${fmt(state.lossFollow.maxPrice)}`:'等待来源盘口配置'):paperPage?'盘口限价入场':previous?(account?`固定反买 · ${fmt(account.config.minPrice)}–${fmt(account.config.maxPrice)}`:'固定反买 · 等待配置'):adaptive?'RA-01.1 自动切换 · 成交 ≤ 0.50':streakActive?'反买 · 蓝色区域内 · 不限策略买价':`触发 < 0.50 / 成交 ≤ ${state?.rangeConfig?.executionMaxPrice??0.55}`;
+  const rangeEntryLabel=streakReverse?`${streakTitle} · 0.40–0.65`:lossFollow?(state?.lossFollow?`跟随来源 · ${fmt(state.lossFollow.minPrice)}–${fmt(state.lossFollow.maxPrice)}`:'等待来源盘口配置'):paperPage?'盘口限价入场':previous?(account?`固定反买 · ${fmt(account.config.minPrice)}–${fmt(account.config.maxPrice)}`:'固定反买 · 等待配置'):adaptive?'RA-01.1 自动切换 · 成交 ≤ 0.50':streakActive?'反买 · 蓝色区域内 · 不限策略买价':`触发 < 0.50 / 成交 ≤ ${state?.rangeConfig?.executionMaxPrice??0.55}`;
 
   function switchMode(next) { location.assign(PAGE_BY_ID[next]?.path??'/previous'); }
   async function action(path, body = {}) {
@@ -191,7 +202,7 @@ function App() {
 
         {lossFollow&&state?.lossFollow&&<div className="data-warning"><Info size={16}/><span>
           来源：上场方向模拟 · 连续失利 {state.lossFollow.losses}/3
-          {state.lossFollow.cooldown?(lossFollowLive?' · 首笔同向失利，本场跳过，下一场恢复':' · 跟随单失利且连续三场同向，本场跳过') :state.lossFollow.active?' · 跟随中':state.lossFollow.ready?' · 已有触发信号，下一场入场前复核':' · 等待触发'}
+          {state.lossFollow.cooldown?(lossFollowLive?' · 首笔同向失利，本场跳过，下一场恢复':' · 跟随单失利且连续三场同向，本场跳过'):state.lossFollow.active?(account?.singleTradeCycle?' · 等待本轮一笔成交':' · 跟随中'):state.lossFollow.ready?' · 已有触发信号，下一场入场前复核':' · 等待触发'}
           {state.lossFollow.samples[0]?.source==='polymarket_realtime'?' · 含本场实时预计':''}
           {state.lossFollow.ownResult==='won'?' · 本盘已有获胜信号，暂停跟随':''}
         </span></div>}
@@ -217,7 +228,7 @@ function App() {
           <section className={`signal-bar ${strategySignal?.toLowerCase() || 'neutral'}`}><div className="signal-icon">{strategySignal==='UP'?<ArrowUp size={18}/>:strategySignal==='DOWN'?<ArrowDown size={18}/>:<Activity size={18}/>}</div><div><span className="mini-label">当前策略信号</span><p>{automaticMode?<><b className={strategySignal==='UP'?'green':strategySignal==='DOWN'?'red':''}>{strategySignal||'WAIT'}</b><span>{(state?.round===start?state.entrySignal?.message:null)||(previous?'等待上一场方向':'等待区间突破策略信号')}{state?.entrySignal?.previousPrice!=null&&<> · {fmt(state.entrySignal.previousPrice,4)} → {fmt(state.entrySignal.latestPrice,4)}</>}</span></>:followPrevious ? previousPrediction ? <><b className={strategySignal==='UP'?'green':'red'}>{strategySignal}</b><span>跟随上一场预计方向 · 开盘后 {account?.config.entryDelay ?? 5} 秒入场{previousPrediction.source==='polymarket_last_second'?' · 末秒预测':previousPrediction.source==='polymarket_last_available'?' · 收盘前追溯预测':''}</span></> : '等待上一场预计方向' : freshSpot && Number.isFinite(spot.currentOpen) ? <><b className={strategySignal === 'UP' ? 'green' : strategySignal === 'DOWN' ? 'red' : ''}>{strategySignal || '持平'}</b><span>{reverseSignal?`本场信号 ${spot.direction || '持平'} · 反向买入` : <>当前价 {spot.price >= spot.currentOpen ? '≥' : '<'} 本场起始价</>}</span></> : freshSpot ? '本场起始价待公布，暂不生成信号' : '等待有效行情后生成信号'}</p></div><div className="signal-rule">{rangeMode||previous?rangeEntryLabel:momentum?'官方同向 ≤ 0.50':reverseSignal?'反向买入':followPrevious?'跟随上一场':'顺势入场'}<ChevronRight size={14}/><span>每场一次</span></div></section>
         </div>
 
-        <StrategyControl previous={previous} account={account} busy={busy} connected={connected} token={token} live={live} authenticated={state?.live.authenticated} base={base} baseLocked={baseLocked} baseDirty={baseDirty} setEditingBase={setEditingBase} setBase={setBase} onSettings={()=>setModal('settings')} onToggle={()=>account.running?action(`${mode}/stop`):startStrategy()} adaptive={adaptive} title={lossFollow?"三连亏跟随策略":previous?"固定反买马丁策略":adaptive?"RA-01.1 自适应组合":"区间突破马丁策略"} entryTime={previous?"开盘立即尝试（15 秒内）":adaptive?"第 60–65 秒":"开盘立即尝试"} entryMode={rangeEntryLabel}/></div>
+        <StrategyControl previous={previous} account={account} busy={busy} connected={connected} token={token} live={live} authenticated={state?.live.authenticated} base={base} baseLocked={baseLocked} baseDirty={baseDirty} setEditingBase={setEditingBase} setBase={setBase} onSettings={()=>setModal('settings')} onToggle={()=>account.running?action(`${mode}/stop`):startStrategy()} adaptive={adaptive} title={streakReverse?streakTitle:lossFollow?"三连亏跟随策略":previous?"固定反买马丁策略":adaptive?"RA-01.1 自适应组合":"区间突破马丁策略"} entryTime={previous?"开盘立即尝试（15 秒内）":adaptive?"第 60–65 秒":"开盘立即尝试"} entryMode={rangeEntryLabel}/></div>
 
         <HistoryPanel onVisibility={(kind,hidden)=>action(`${mode}/${kind}/visibility`,{hidden})} spot={spot} now={now} connected={connected} spotError={state?.errors.spot} key={`${mode}:${tab}:${historyClearKey}`} mode={mode} tab={tab} setTab={setTab} account={account} currentRound={start} busy={busy} onClear={kind=>setModal({type:'clear-history',kind})} onReconcile={order => setModal({type:'reconcile',order})}/>
         <footer className="footer"><span><span className="footer-dot"/>PULSE TERMINAL <span className="footer-version">v1.0</span></span><p>行情用于策略参考，结算以 Polymarket 官方结果为准。</p><span>LOCAL WORKSPACE <ShieldCheck size={12}/></span></footer>
@@ -225,8 +236,8 @@ function App() {
     </div>
     {toast && <div role="status" className={`toast ${toast.type}`}>{toast.type === 'success' ? <CheckCircle2 size={18}/> : <Info size={18}/>}<span>{toast.text}</span><button onClick={() => setToast(null)} aria-label="关闭提示"><X size={14}/></button></div>}
     {modal && <Modal onClose={() => setModal(null)} title={modal === 'settings' ? '策略参数' : modal === 'connection' ? '连接与数据源' : modal === 'guide' ? '交易规则与使用指南' : modal?.type === 'start' ? '启动实盘交易' : modal === 'reset' ? '重置模拟账户' : modal?.type==='clear-history' ? (modal.kind==='orders'?'清空模拟交易记录':'清空模拟运行日志') : '核对实盘订单'}>
-      {modal === 'guide' && previousLive && <PreviousStrategySummary live={live}/>}
-      {modal === 'guide' && lossFollow && <div className="guide"><p>上场方向模拟连续失利三笔后，下一场复核触发依据，并沿用来源盘的买入方向、跳场规则和价格范围。</p><p>{lossFollowLive?'若来源三笔在连续同向的场次反买失利，且本轮首笔跟随也因同向延续而失利，跳过紧接的一场，随后恢复跟随。':'每笔跟随成交失利后，若该场和紧邻的前两场收盘同向，就跳过下一场，再下一场恢复入场检查。前两场即使没有成交也计入。恢复后的每笔成交继续按同一规则判断。'}</p><p>跟随盘独立计算资金轮次。失利后的下一笔为上一笔 × 2 + 5 pUSD，获胜后恢复首笔并等待新一轮触发。</p>{lossFollowLive&&<p>使用真实钱包按盘口提交 FOK 订单，成交、结算和兑换在本盘核对。</p>}</div>}
+      {modal === 'guide' && (previousLive||streakReverse) && <PreviousStrategySummary live={live} streakReverse={streakRounds}/>}
+      {modal === 'guide' && lossFollow && <div className="guide"><p>上场方向模拟连续失利三笔后，下一场复核触发依据，并沿用来源盘的买入方向、跳场规则和价格范围。</p><p>{lossFollowLive?'若来源三笔在连续同向的场次反买失利，且本轮首笔跟随也因同向延续而失利，跳过紧接的一场，随后恢复跟随。':'每次触发只成交一单，使用首笔金额。成交即重新等待该场之后来源盘出现三笔新的连续失利。'}</p>{lossFollowLive&&<><p>跟随盘独立计算资金轮次。失利后的下一笔为上一笔 × 2 + 5 pUSD，获胜后恢复首笔并等待新一轮触发。</p><p>使用真实钱包按盘口提交 FOK 订单，成交、结算和兑换在本盘核对。</p></>}</div>}
       {modal === 'guide' && adaptive && <div className="guide"><p>RA-01 在开盘第 60 秒冻结方向，根据历史趋势效率与区间位置选择本场同向、趋势一致确认、连续同向反买；证据不足则空仓。</p><p>仅第 60–65 秒允许买入，使用第 60 秒后获取且不超过 3 秒的官方盘口，成交价不超过 0.50，遵守手续费、tick、份额、深度与原资金风控。每场最多买入一次。</p><p>原余额和马丁序列继续使用，旧持仓照常结算。固定 $6 对照观察与实际模拟账户独立，暂停对照不会暂停策略。实盘仍使用旧区间规则。</p><p>历史独立留出方向命中率 56.32%，不代表未来保证达到 55%，也不代表可成交胜率。</p></div>}
       {modal === 'guide' && rangeMode && !adaptive && <RangeGuide config={state?.rangeConfig} entryWindow={account?.config.entryWindow}/>}
       {modal === 'guide' && momentum && <div className="guide"><div className="guide-step"><b>01</b><div><h3>官方初始价与最新变动同向</h3><p>不设置开盘延迟。开盘后的新鲜官方价格高于本场官方初始价，且最新价高于前一笔官方价时买 UP；两项均下跌时买 DOWN。持平、方向冲突或数据不完整则继续等待，默认截止开盘后 299 秒。报价按本场预言机窗口读取，最近两笔均须在 6 秒内，时间必须递增；首个开盘后报价可以与紧邻开盘前的新鲜报价比较。</p></div></div><div className="guide-step"><b>02</b><div><h3>买价不超过 0.50，每场一次</h3><p>买入使用所选方向官方卖盘，价格必须大于 0、小于 1，且不超过 0.50；不使用买一价、概率或中间价代替可成交价格。遵守 tick、最小份额、滑点和真实深度，含手续费的预算必须能够完整成交。下单前再次核对两项方向。</p></div></div><div className="guide-step"><b>03</b><div><h3>独立马丁账户</h3><p>首笔金额在启动时保存。失利翻倍，任意一场获胜复位；单笔金额超限后从首笔开始新轮。按上一单预计结果继续资金序列，官方结算在后台入账。账户、配置、交易记录和日志独立保存；重启后保持暂停。</p></div></div></div>}
@@ -258,6 +269,6 @@ if(pageId==='live-reports'){
   location.replace(PAGE_BY_ID['reports-live'].path+location.search+location.hash);
 }else{
   createRoot(document.getElementById('root')).render(
-    pageId==='reports-live'?<ReportsPage live/>:pageId==='reports'?<ReportsPage/>:<App/>
+    pageId==='reports-live'?<ReportsPage live/>:pageId==='reports'?<ReportsPage/>:pageId==='market-history'?<MarketHistoryPage/>:<App/>
   );
 }

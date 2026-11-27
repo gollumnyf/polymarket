@@ -9,6 +9,7 @@ test('live uses its own execution mode, requires authentication and never starts
   const store=new Store(':memory:');t.after(()=>store.close());
   const engine=new PreviousDirectionEngine(store,{readiness:()=>({enabled:true,configured:true,authenticated:false})},{mode:'live',now:()=>start*1000});
   assert.equal(store.account('live').running,false);
+  assert.equal(engine.strategyVersion,'PR-001');
   assert.equal(store.account('live').config.maxPrice,.7);
   assert.equal(store.account('live').config.entryWindow,15);
   await assert.rejects(engine.start('paper'));
@@ -38,10 +39,12 @@ test('previous-direction paper fills at open without a current BTC quote, uses o
   engine.errors.spot='Current BTC feed unavailable';
   await assert.rejects(engine.start('live'));await engine.start('paper');await engine.attempt('paper');await engine.attempt('paper');
   const first=store.orderForRound('paper',start);assert.equal(store.orderCount('paper'),1);
-  assert.equal(first.strategyVersion,'PR-001');assert.equal(first.direction,'UP');assert.equal(first.signalRule,'previous_round_fixed_reverse');assert.equal(first.budget,10);assert.equal(first.price,.7);assert.match(first.entryReason,/官方最终结果 DOWN/);
+  assert.equal(first.strategyVersion,'PR-002');assert.equal(first.direction,'UP');assert.equal(first.signalRule,'previous_round_fixed_reverse');assert.equal(first.budget,10);assert.equal(first.price,.7);assert.match(first.entryReason,/官方最终结果 DOWN/);
   market(start+300);predict(start,'DOWN');await engine.attempt('paper');
-  const second=store.orderForRound('paper',start+300);assert.equal(second.budget,20);assert.equal(second.direction,'UP');assert.match(second.entryReason,/接口起止价预计 DOWN/);
-  market(start+600);predict(start+300,'UP');await engine.attempt('paper');assert.equal(store.orderForRound('paper',start+600).budget,10);
+  assert.equal(store.orderForRound('paper',start+300),null);
+  market(start+600);predict(start+300,'DOWN');await engine.attempt('paper');
+  const second=store.orderForRound('paper',start+600);assert.equal(second.budget,20);assert.equal(second.direction,'UP');assert.match(second.entryReason,/接口起止价预计 DOWN/);
+  market(start+900);predict(start+600,'UP');await engine.attempt('paper');assert.equal(store.orderForRound('paper',start+900).budget,10);
 });
 test('paper waits within the entry window for a best ask at or above the inclusive floor',async t=>{
   const {engine,store,market,official}=fixture(t);
@@ -78,9 +81,11 @@ test('paper resets the stake after a loss at the configured limit, even while se
   const a=store.account('paper');engine.configure('paper',{...a.config,maxDoublings:1,maxAmount:20});
   await engine.start('paper');await engine.attempt('paper');
   market(start+300);predict(start,'DOWN');await engine.attempt('paper');
-  assert.equal(store.orderForRound('paper',start+300).budget,20);
   market(start+600);predict(start+300,'DOWN');await engine.attempt('paper');
-  assert.equal(store.orderForRound('paper',start+600).budget,10);
+  assert.equal(store.orderForRound('paper',start+600).budget,20);
+  market(start+900);predict(start+600,'DOWN');await engine.attempt('paper');
+  market(start+1200);predict(start+900,'DOWN');await engine.attempt('paper');
+  assert.equal(store.orderForRound('paper',start+1200).budget,10);
   const limit={...a,config:{...a.config,maxDoublings:1},losses:1,pnl:-10};
   const settled=engine.accountAfterSettlement(limit,-20,false);
   assert.equal(settled.losses,0);assert.equal(settled.cycle,a.cycle+1);assert.equal(settled.pnl,-30);
@@ -116,7 +121,7 @@ test('live and paper both buy the opposite direction even with a five-round same
   assert.equal(paper.signal().stats.rule,'reverse');
   assert.equal(paper.signal().direction,'UP');
 });
-for(const direction of ['UP','DOWN'])test('paper and live skip once per streak of consecutive '+direction+' rounds',async t=>{
+for(const direction of ['UP','DOWN'])test('paper repeats the one-round skip after filled losses in a '+direction+' streak',async t=>{
   const {engine,store,market,official,predict}=fixture(t);
   const opposite=direction==='UP'?'DOWN':'UP';
   official(start-900,opposite);
@@ -129,19 +134,39 @@ for(const direction of ['UP','DOWN'])test('paper and live skip once per streak o
   official(start,direction);market(start+300);await engine.attempt('paper');
   assert.equal(store.orderForRound('paper',start+300).direction,opposite);
   assert.equal(live.signal(start+300).direction,opposite);
-  for(let step=2;step<=5;step++){
-    const round=start+step*300;
-    if(step%2===0)predict(round-300,direction);else official(round-300,direction);
-    market(round);
-    for(const current of [engine,live]){
-      assert.equal(current.signal(round).code,null);
-      assert.equal(current.signal(round).direction,opposite);
-    }
-  }
-  official(start+1500,opposite);
-  assert.equal(engine.signal(start+1800).direction,direction);
+  market(start+600);predict(start+300,direction);await engine.attempt('paper');
+  assert.equal(engine.entryBlocks.paper.code,'PREVIOUS_REVERSE_COOLDOWN');
+  assert.match(engine.entryBlocks.paper.message,/预计失利，本场再跳过一场/);
+  assert.equal(store.orderForRound('paper',start+600),null);
+  assert.equal(live.signal(start+600).direction,opposite);
+  const restarted=new PreviousDirectionEngine(store,engine.venue,{now:engine.now});
+  assert.equal(restarted.signal().code,'PREVIOUS_REVERSE_COOLDOWN');
+
+  market(start+900);official(start+600,direction);await engine.attempt('paper');
+  assert.equal(store.orderForRound('paper',start+900).budget,20);
+  market(start+1200);predict(start+900,direction);official(start+900,direction);await engine.attempt('paper');
+  assert.match(engine.entryBlocks.paper.message,/官方确认失利，本场再跳过一场/);
+  assert.equal(store.orderForRound('paper',start+1200),null);
+  assert.equal(live.signal(start+1200).direction,opposite);
+  market(start+1500,0,[{price:.71,size:1000}]);official(start+1200,direction);await engine.attempt('paper');
+  assert.equal(store.orderForRound('paper',start+1500),null);
+  official(start+1500,direction);
+  assert.equal(engine.signal(start+1800).direction,opposite);
   official(start+1800,opposite);
-  assert.equal(engine.signal(start+2100).code,'PREVIOUS_REVERSE_COOLDOWN');
+  assert.equal(engine.signal(start+2100).direction,direction);
+  official(start+2100,opposite);
+  assert.equal(engine.signal(start+2400).code,'PREVIOUS_REVERSE_COOLDOWN');
+});
+
+test('paper uses the official result to clear a repeat pause based on an estimated loss',async t=>{
+  const {engine,store,market,official,predict}=fixture(t);
+  for(let i=1;i<=3;i++)official(start-i*300,'UP');
+  await engine.start('paper');await engine.attempt('paper');
+  assert.equal(store.orderForRound('paper',start).direction,'DOWN');
+  market(start+300);predict(start,'UP');
+  assert.equal(engine.signal().code,'PREVIOUS_REVERSE_COOLDOWN');
+  official(start,'DOWN');
+  assert.equal(engine.signal().direction,'UP');
 });
 test('previous-direction refuses earlier rounds, voids, prices over 0.70, depth only beyond the cap, and late fills',async t=>{
   const {engine,store,market,predict,official}=fixture(t);

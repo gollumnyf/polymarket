@@ -1,11 +1,11 @@
 import {PreviousDirectionEngine} from './previous-direction-engine.mjs';
 import {roundStart,ROUND_SECONDS,resetAtAmountLimit} from './strategy.mjs';
-import {ACTIVE_LOSS_FOLLOW_VERSION,ACTIVE_PAPER_LOSS_FOLLOW_VERSION,LOSS_FOLLOW_V2} from './strategy-versions.mjs';
+import {ACTIVE_LOSS_FOLLOW_VERSION,ACTIVE_PAPER_LOSS_FOLLOW_VERSION,LOSS_FOLLOW_V2,LOSS_FOLLOW_V4} from './strategy-versions.mjs';
 import {stakeAmount} from '../src/stake-amount.mjs';
 
 export class LossFollowEngine extends PreviousDirectionEngine {
   constructor(store,venue,{source,mode='paper',initialConfig,...options}){
-    super(store,venue,{...options,mode,previousMarketStore:source.store});
+    super(store,venue,{...options,mode,previousMarketStore:source.store,repeatAfterLoss:false});
     this.source=source;
     store.db.exec(`CREATE TABLE IF NOT EXISTS loss_follow_triggers (
       session TEXT NOT NULL REFERENCES account_sessions(id), source_round INTEGER NOT NULL,
@@ -25,11 +25,20 @@ export class LossFollowEngine extends PreviousDirectionEngine {
       this.strategyVersion=store.registerStrategyVersion(version);
     });
   }
-  nextAmount(account){return stakeAmount(account.config.baseAmount,account.stakeLosses??account.losses,5);}
+  get singleTradeCycle(){return this.strategyVersion===ACTIVE_PAPER_LOSS_FOLLOW_VERSION.id;}
+  nextAmount(account){return this.singleTradeCycle?account.config.baseAmount:stakeAmount(account.config.baseAmount,account.stakeLosses??account.losses,5);}
+  executionAccount(account){return this.singleTradeCycle?{...account,stakeLosses:0,stakeLabel:'本轮固定首笔'}:account;}
+  isPreviousStakeCycle(){return this.singleTradeCycle;}
+  positionStatus(){return this.singleTradeCycle?'本轮已成交，重新等待来源盘三笔新失利':super.positionStatus();}
   resetStakeCycle(account){
+    if(this.singleTradeCycle)return account;
     if(account.config.baseAmount<=account.config.maxAmount&&account.losses>account.config.maxDoublings)
       return {...account,losses:0,cycle:account.cycle+1,cyclePnl:0};
     return resetAtAmountLimit(account,a=>this.nextAmount(a));
+  }
+  accountAfterSettlement(account,pnl,won,order){
+    const settled=super.accountAfterSettlement(account,pnl,won,order);
+    return this.singleTradeCycle?{...settled,losses:0,cyclePnl:0,cycle:account.cycle+1}:settled;
   }
   evidence(engine,order,now){
     const final={won:'won',lost:'lost',void:'void'}[order.status];
@@ -112,13 +121,14 @@ export class LossFollowEngine extends PreviousDirectionEngine {
   }
   monitor(start,now=this.now(),preview=false){
     const own=this.store.account(this.mode),from=this.source.store.account('paper');
-    const latest=this.store.recentFilledOrders(this.mode,own.session,1,{ignoreVoid:true})[0];
-    const repeatCooldown=this.strategyVersion===ACTIVE_PAPER_LOSS_FOLLOW_VERSION.id;
-    const latestResult=!latest?null:repeatCooldown?this.paperFollowEvidence(latest,now):this.evidence(this,latest,now);
-    const ownWon=latestResult?.result==='won';
+    const singleTrade=this.singleTradeCycle;
+    const latest=this.store.recentFilledOrders(this.mode,own.session,1,{ignoreVoid:!singleTrade})[0];
+    const repeatCooldown=this.strategyVersion===LOSS_FOLLOW_V4.id;
+    const latestResult=!latest||singleTrade?null:repeatCooldown?this.paperFollowEvidence(latest,now):this.evidence(this,latest,now);
+    const completed=singleTrade?Boolean(latest):latestResult?.result==='won';
     const trigger=this.store.db.prepare('SELECT * FROM loss_follow_triggers WHERE session=? ORDER BY source_round DESC LIMIT 1').get(own.session);
-    let armed=!!trigger&&(!ownWon||trigger.source_round>latest.round);
-    const holding=!!latest&&!ownWon;
+    let armed=!!trigger&&(!completed||trigger.source_round>latest.round);
+    const holding=!!latest&&!completed;
     if(armed&&!holding){
       // Before the first fill, an official correction can withdraw a provisional trigger.
       for(const round of [trigger.first_round,trigger.second_round,trigger.source_round]){
@@ -129,7 +139,7 @@ export class LossFollowEngine extends PreviousDirectionEngine {
     }
     const active=holding||armed;
     const recent=this.source.store.recentFilledOrders('paper',from.session,3,{beforeRound:preview?start+ROUND_SECONDS:start})
-      .filter(order=>!ownWon||order.round>latest.round);
+      .filter(order=>!completed||order.round>latest.round);
     let losses=0;
     const samples=recent.map(order=>({round:order.round,...this.evidence(this.source,order,now)}));
     for(const sample of samples){if(sample.result!=='lost')break;losses++;}
@@ -154,10 +164,10 @@ export class LossFollowEngine extends PreviousDirectionEngine {
   }
   signal(start=roundStart(this.now())){
     const state=this.monitor(start);
-    const base=this.source.signal(start);
+    const base=this.mode==='live'?this.source.signal(start,{repeatAfterLoss:false}):this.source.signal(start);
     if(state.cooldown)return {...base,direction:null,...state.cooldown};
     if(!state.ready)return {...base,direction:null,code:'LOSS_FOLLOW_WAIT',message:'等待上场方向模拟的新三连亏：'+state.losses+' / 3'};
-    const evidence=state.active?'本轮跟随中，来源触发场 #'+state.activeFrom+'；获胜后重新待命':'来源三连亏：'+state.samples.map(x=>'#'+x.round+' '+x.source).join('、');
+    const evidence=state.active?`本轮跟随中，来源触发场 #${state.activeFrom}；${this.singleTradeCycle?'本轮成交一单后重新待命':'获胜后重新待命'}`:'来源三连亏：'+state.samples.map(x=>'#'+x.round+' '+x.source).join('、');
     return {...base,message:evidence+'；'+base.message};
   }
   quote(book,budget,config,schedule){
@@ -175,7 +185,7 @@ export class LossFollowEngine extends PreviousDirectionEngine {
   }
   snapshot(){
     const result=super.snapshot(),round=roundStart(this.now()),source=this.source.store.account('paper');
-    result.accounts[this.mode].stakeIncrement=5;
+    Object.assign(result.accounts[this.mode],{stakeIncrement:this.singleTradeCycle?0:5,singleTradeCycle:this.singleTradeCycle});
     return {...result,strategy:'previous_round_loss_follow',lossFollow:{...this.monitor(round,this.now(),true),
       minPrice:source.config.minPrice,maxPrice:source.config.maxPrice}};
   }
